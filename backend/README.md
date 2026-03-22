@@ -459,4 +459,4 @@ curl -X POST http://localhost:3001/api/v1/normalization/apply \
 
 ## License
 
-MIT
+American University of Mongolia
