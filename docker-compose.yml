@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: ./backend
+    container_name: dataforge-backend
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_PATH=./data/database.duckdb
+      - UPLOAD_DIR=./uploads
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      - db-data:/app/data
+      - uploads:/app/uploads
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: dataforge-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  uploads:
