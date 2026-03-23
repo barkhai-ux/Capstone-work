@@ -11,15 +11,15 @@ services:
     volumes:
       - db-data:/app/data
       - uploads:/app/uploads
-    ports:
-      - "3001:3001"
+    expose:
+      - "3001"
     restart: unless-stopped
 
   frontend:
     build: ./frontend
     container_name: dataforge-frontend
     ports:
-      - "80:80"
+      - "8080:80"
     depends_on:
       - backend
     restart: unless-stopped

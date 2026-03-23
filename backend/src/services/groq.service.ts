@@ -347,6 +347,206 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
     return parsed;
   }
 
+  async generateChartConfig(
+    tables: { name: string; id: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[],
+    prompt: string
+  ): Promise<Record<string, unknown>> {
+    const client = this.getClient();
+
+    const tablesDescription = tables.map((t) => {
+      const cols = t.columns.map((c) => `  - "${c.name}" (${c.type})`).join('\n');
+      const rows = t.sampleData.slice(0, 5).map((row) =>
+        JSON.stringify(row, (_key, value) =>
+          typeof value === 'bigint' ? Number(value) : value
+        )
+      ).join('\n');
+      return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}\nSample data:\n${rows}`;
+    }).join('\n\n---\n\n');
+
+    const aiPrompt = `You are a dashboard chart configuration expert. Given the database tables below and the user's request, generate a chart widget configuration.
+
+${tablesDescription}
+
+User request: "${prompt}"
+
+Rules:
+1. Choose the best chartType: "bar", "line", "pie", or "doughnut" based on the user's request.
+2. Pick the most relevant tableId, labelColumn (categorical/text column for X-axis or categories), and valueColumn (numeric column for Y-axis or values).
+3. Pick aggregation: "sum", "avg", "count", "min", or "max" based on the user's intent.
+4. Set topN: number of top items to show (0 = all, 5 = top 5, 10 = top 10, etc.). If the user says "top 5", "top 10", etc., set it accordingly. Default to 0 (all) if not specified.
+5. Set dateGrouping: "none", "yearly", "quarterly", or "monthly". If the labelColumn is a DATE or TIMESTAMP type and the chart is a line or bar chart, choose an appropriate grouping based on the data. If the user mentions yearly/monthly/quarterly, use that. Default to "none" for non-date columns.
+6. Generate a concise, descriptive title.
+7. For style, set colors based on the user's request. Available style fields:
+   - bgColor (card background, default "#ffffff")
+   - borderColor (card border, default "#e5e7eb")
+   - titleColor (title text, default "#1f2937")
+   - titleSize (number 9-24, default 13)
+   - chartColors (array of 10 hex colors for chart segments/bars)
+   - lineColor (for line charts, default "#3b82f6")
+   - gridColor (axis grid, default "#f3f4f6")
+   - axisLabelColor (default "#6b7280")
+   - axisLabelSize (number 8-18, default 11)
+   - xAxisLabel (string, optional)
+   - yAxisLabel (string, optional)
+   - showLegend (boolean, default false)
+   - legendPosition ("top", "bottom", "left", "right")
+   - borderRadius (number 0-24, default 12)
+8. If user mentions a color theme (e.g., "red", "blue", "ocean"), adjust chartColors accordingly using shades of that color.
+
+Respond ONLY with valid JSON:
+{
+  "chartType": "bar",
+  "tableId": "the-table-id",
+  "labelColumn": "column_name",
+  "valueColumn": "column_name",
+  "aggregation": "sum",
+  "topN": 0,
+  "dateGrouping": "none",
+  "title": "Chart Title",
+  "style": { ... }
+}`;
+
+    const response = await client.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a data visualization expert. Respond only with valid JSON. No markdown, no code blocks.',
+        },
+        { role: 'user', content: aiPrompt },
+      ],
+      temperature: 0.2,
+      max_tokens: 1000,
+    });
+
+    const content = response.choices[0]?.message?.content?.trim();
+    if (!content) throw new Error('Empty response from AI');
+
+    let jsonStr = content;
+    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) jsonStr = fenceMatch[1].trim();
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch {
+      logger.error('Failed to parse Groq chart config response:', content);
+      throw new Error('AI returned invalid JSON. Please try again.');
+    }
+
+    logger.info(`Generated chart config for: "${prompt}"`);
+    return parsed;
+  }
+
+  async generateDashboard(
+    tables: { name: string; id: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[],
+    prompt: string
+  ): Promise<Record<string, unknown>[]> {
+    const client = this.getClient();
+
+    const tablesDescription = tables.map((t) => {
+      const cols = t.columns.map((c) => `  - "${c.name}" (${c.type})`).join('\n');
+      const rows = t.sampleData.slice(0, 5).map((row) =>
+        JSON.stringify(row, (_key, value) =>
+          typeof value === 'bigint' ? Number(value) : value
+        )
+      ).join('\n');
+      return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}\nSample data:\n${rows}`;
+    }).join('\n\n---\n\n');
+
+    const aiPrompt = `You are a professional BI dashboard designer. Given the database tables below and the user's request, design a complete dashboard with multiple chart widgets that provide comprehensive insights.
+
+${tablesDescription}
+
+User request: "${prompt}"
+
+Design a dashboard with 4-8 well-chosen widgets. Mix different chart types for visual variety. Include:
+- Key metric overview charts (bar/doughnut for top categories)
+- Trend analysis (line charts if date/time columns exist)
+- Distribution breakdowns (pie/doughnut for proportions)
+- Comparison charts (bar for comparing segments)
+- A text widget with a brief dashboard summary/insight
+
+For each widget, provide:
+- widgetType: "chart" or "text"
+- For chart widgets: chartType ("bar", "line", "pie", "doughnut"), tableId, labelColumn, valueColumn, aggregation ("sum", "avg", "count", "min", "max"), topN (0=all, 5, 10, etc.), dateGrouping ("none", "yearly", "quarterly", "monthly" — use an appropriate grouping when the labelColumn is a DATE/TIMESTAMP type, default "none" for non-date columns)
+- For text widgets: content (2-3 sentences summarizing a key insight about the data)
+- title: descriptive title
+- style: object with these fields:
+  * bgColor (card background hex)
+  * borderColor (card border hex)
+  * titleColor (title text hex)
+  * titleSize (number 9-24)
+  * chartColors (array of 10 hex colors — vary between widgets for visual distinction)
+  * lineColor (for line charts)
+  * gridColor (axis grid hex)
+  * axisLabelColor (hex)
+  * axisLabelSize (number 8-18)
+  * xAxisLabel, yAxisLabel (strings, optional)
+  * showLegend (boolean)
+  * legendPosition ("top", "bottom", "left", "right")
+  * borderRadius (number 0-24)
+
+Use a cohesive color theme across widgets. If the user mentions a style/theme, apply it consistently.
+
+Respond ONLY with a valid JSON array:
+[
+  {
+    "widgetType": "chart",
+    "chartType": "bar",
+    "tableId": "id",
+    "labelColumn": "col",
+    "valueColumn": "col",
+    "aggregation": "sum",
+    "topN": 10,
+    "dateGrouping": "none",
+    "title": "Title",
+    "style": { ... }
+  },
+  {
+    "widgetType": "text",
+    "title": "Key Insight",
+    "content": "Summary text...",
+    "style": { ... }
+  }
+]`;
+
+    const response = await client.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a professional BI dashboard designer. You create beautiful, insightful dashboards. Respond only with a valid JSON array. No markdown, no code blocks.',
+        },
+        { role: 'user', content: aiPrompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 4000,
+    });
+
+    const content = response.choices[0]?.message?.content?.trim();
+    if (!content) throw new Error('Empty response from AI');
+
+    let jsonStr = content;
+    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) jsonStr = fenceMatch[1].trim();
+
+    let parsed: Record<string, unknown>[];
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch {
+      logger.error('Failed to parse Groq dashboard response:', content);
+      throw new Error('AI returned invalid JSON. Please try again.');
+    }
+
+    if (!Array.isArray(parsed)) {
+      throw new Error('AI response is not an array');
+    }
+
+    logger.info(`Generated dashboard with ${parsed.length} widgets for: "${prompt}"`);
+    return parsed;
+  }
+
   async generateSQL(
     tables: { name: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[],
     question: string

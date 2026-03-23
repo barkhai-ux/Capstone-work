@@ -259,6 +259,24 @@ export const api = {
     return json as unknown as ApiResponse<StarSchemaResult>;
   },
 
+  // AI chart generation
+  generateChart(prompt: string): Promise<ApiResponse<Record<string, unknown>>> {
+    return request(`${API_BASE}/chart/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+  },
+
+  // AI dashboard generation
+  generateDashboard(prompt: string): Promise<ApiResponse<{ widgets: Record<string, unknown>[] }>> {
+    return request(`${API_BASE}/chart/dashboard`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+  },
+
   // Natural language query
   queryTable(tableId: string, question: string): Promise<ApiResponse<QueryResult>> {
     return request(`${API_BASE}/query`, {

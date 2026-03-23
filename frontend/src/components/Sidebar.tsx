@@ -30,6 +30,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [question, setQuestion] = useState('');
+  const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -110,27 +111,56 @@ export default function Sidebar({
                 </div>
               )}
               {tables.map((t) => (
-                <div
-                  key={t.id}
-                  onClick={() => onSelect(t.id)}
-                  onContextMenu={(e) => handleContext(e, t.id)}
-                  className={`sidebar-table-item group ${selectedId === t.id && view !== 'dashboard' ? 'active' : ''}`}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <svg className="w-[14px] h-[14px] flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375" />
-                  </svg>
-                  <span className="truncate flex-1 text-left">{t.name}</span>
-                  {/* Three-dot menu trigger */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleContext(e, t.id); }}
-                    className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 hover:bg-gray-200 transition-all flex-shrink-0"
+                <div key={t.id}>
+                  <div
+                    onClick={() => onSelect(t.id)}
+                    onContextMenu={(e) => handleContext(e, t.id)}
+                    className={`sidebar-table-item group ${selectedId === t.id && view !== 'dashboard' ? 'active' : ''}`}
+                    role="button"
+                    tabIndex={0}
                   >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setExpandedTable(expandedTable === t.id ? null : t.id); }}
+                      className="w-3 h-3 flex items-center justify-center flex-shrink-0 text-gray-400"
+                    >
+                      <svg className={`w-2.5 h-2.5 transition-transform ${expandedTable === t.id ? '' : '-rotate-90'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                      </svg>
+                    </button>
+                    <svg className="w-[14px] h-[14px] flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375" />
                     </svg>
-                  </button>
+                    <span className="truncate flex-1 text-left">{t.name}</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleContext(e, t.id); }}
+                      className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 hover:bg-gray-200 transition-all flex-shrink-0"
+                    >
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                      </svg>
+                    </button>
+                  </div>
+                  {expandedTable === t.id && t.columns && (
+                    <div className="ml-7 space-y-px py-0.5">
+                      {t.columns.map((col) => (
+                        <div
+                          key={col.name}
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('application/column', JSON.stringify({ tableId: t.id, columnName: col.name }));
+                            e.dataTransfer.effectAllowed = 'copy';
+                          }}
+                          className="flex items-center gap-1.5 px-2 py-[3px] text-[11px] text-gray-500 hover:bg-gray-100 rounded cursor-grab active:cursor-grabbing"
+                        >
+                          <svg className="w-3 h-3 text-gray-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6.75h16.5" />
+                          </svg>
+                          <span className="truncate">{col.name}</span>
+                          <span className="ml-auto text-[9px] text-gray-300 flex-shrink-0">{col.type}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
 
