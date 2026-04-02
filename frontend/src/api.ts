@@ -117,6 +117,21 @@ export interface QueryResult {
   totalRows: number;
 }
 
+// ── Snippet types ──
+
+export interface SnippetSummary {
+  id: string;
+  name: string;
+  question: string;
+  rowCount: number;
+  createdAt: string;
+}
+
+export interface SnippetDetail extends SnippetSummary {
+  columns: string[];
+  rows: Record<string, unknown>[];
+}
+
 // ── API helpers ──
 
 async function request<T>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
@@ -277,12 +292,37 @@ export const api = {
     });
   },
 
-  // Natural language query
-  queryTable(tableId: string, question: string): Promise<ApiResponse<QueryResult>> {
+  // Natural language query (no table selection needed — AI picks from all tables)
+  queryData(question: string, history?: { role: 'user' | 'assistant'; content: string }[]): Promise<ApiResponse<QueryResult>> {
     return request(`${API_BASE}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tableId, question }),
+      body: JSON.stringify({ question, history }),
     });
+  },
+
+  // Snippets
+  async listSnippets(): Promise<ApiResponse<SnippetSummary[]>> {
+    const json = await request<{ snippets: SnippetSummary[] }>(`${API_BASE}/snippets`);
+    if (json.success && json.data?.snippets) {
+      return { ...json, data: json.data.snippets };
+    }
+    return json as unknown as ApiResponse<SnippetSummary[]>;
+  },
+
+  getSnippet(snippetId: string): Promise<ApiResponse<SnippetDetail>> {
+    return request(`${API_BASE}/snippets/${snippetId}`);
+  },
+
+  saveSnippet(name: string, question: string, columns: string[], rows: Record<string, unknown>[]): Promise<ApiResponse<{ id: string; name: string; rowCount: number }>> {
+    return request(`${API_BASE}/snippets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, question, columns, rows }),
+    });
+  },
+
+  deleteSnippet(snippetId: string): Promise<ApiResponse<{ deleted: boolean }>> {
+    return request(`${API_BASE}/snippets/${snippetId}`, { method: 'DELETE' });
   },
 };

@@ -558,7 +558,8 @@ Respond ONLY with a valid JSON array:
 
   async generateSQL(
     tables: { name: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[],
-    question: string
+    question: string,
+    history?: { role: 'user' | 'assistant'; content: string }[]
   ): Promise<string> {
     const client = this.getClient();
     const sanitizedQuestion = sanitizePromptInput(question);
@@ -573,11 +574,20 @@ Respond ONLY with a valid JSON array:
       return `Table: "${t.name}"\nColumns:\n${cols}\nSample data (up to 10 rows):\n${rows}`;
     }).join('\n\n---\n\n');
 
+    // Build conversation context from history
+    let conversationContext = '';
+    if (history && history.length > 0) {
+      const historyText = history.map(h =>
+        h.role === 'user' ? `User asked: "${h.content}"` : `You generated SQL: ${h.content}`
+      ).join('\n');
+      conversationContext = `\nConversation history (for context — the user may reference previous questions/results):\n${historyText}\n`;
+    }
+
     const prompt = `You are a DuckDB SQL expert. Given the database tables below and the user's question, write a single SELECT query that answers it.
 
 ${tablesDescription}
-
-User question: "${sanitizedQuestion}"
+${conversationContext}
+User question: "${question}"
 
 Rules:
 1. Write a single DuckDB-compatible SELECT query. No DDL, no INSERT, no UPDATE, no DELETE, no DROP.
@@ -590,14 +600,15 @@ Rules:
    - Match the intent of the question to the most relevant columns and aggregations.
 6. If the question asks for aggregation, use GROUP BY appropriately.
 7. Limit results to 500 rows max unless the user specifies a different limit (e.g. "top 10").
-8. Respond with ONLY the raw SQL query. No explanation, no markdown, no code fences.`;
+8. IMPORTANT: If the user references a previous question or result (e.g. "top 10 of that", "filter those", "sort the previous result"), use the conversation history to understand what they mean. Build a new query that applies the user's refinement to the previous query's logic.
+9. Respond with ONLY the raw SQL query. No explanation, no markdown, no code fences.`;
 
     const response = await client.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages: [
         {
           role: 'system',
-          content: 'You are a SQL expert. Read the user\'s question carefully and select only the columns that directly answer it. Respond with ONLY a single raw SQL SELECT query. No markdown, no explanation, no code blocks.',
+          content: 'You are a SQL expert. Read the user\'s question carefully and select only the columns that directly answer it. If the user references previous questions, use the conversation history to understand context and build upon previous queries. Respond with ONLY a single raw SQL SELECT query. No markdown, no explanation, no code blocks.',
         },
         { role: 'user', content: prompt },
       ],

@@ -13,16 +13,15 @@ export const queryTable = asyncHandler(
       return sendBadRequest(res, validation.error.message);
     }
 
-    const { tableId, question } = validation.data;
-
-    // Verify the selected table exists
-    const table = await duckdbService.getTableById(tableId);
-    if (!table) {
-      return sendBadRequest(res, 'Table not found');
-    }
+    const { question, history } = validation.data;
 
     // Get ALL tables with their schemas and 10-row samples
     const allTables = await duckdbService.listTables();
+
+    if (allTables.length === 0) {
+      return sendBadRequest(res, 'No tables available. Please upload some data first.');
+    }
+
     const tablesContext: { name: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[] = [];
 
     for (const t of allTables) {
@@ -37,7 +36,8 @@ export const queryTable = asyncHandler(
     // Generate SQL from natural language
     const sql = await groqService.generateSQL(
       tablesContext,
-      question
+      question,
+      history
     );
 
     // Execute the generated query
