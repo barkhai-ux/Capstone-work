@@ -18,6 +18,9 @@ interface ModalState {
 export default function App() {
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const showToast = (message: string, type: 'success' | 'error' = 'success') =>
+    setToast({ message, type, id: Date.now() });
   const [view, setView] = useState<'dashboard' | 'table' | 'ask-data'>('dashboard');
   const [modal, setModal] = useState<ModalState>({ type: null });
   const [loading, setLoading] = useState(true);
