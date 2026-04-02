@@ -4,7 +4,7 @@ import {
   PointElement, LineElement, Title, Tooltip, Legend, Filler,
   RadialLinearScale,
 } from 'chart.js';
-import { Bar, Pie, Doughnut, Line, Scatter, Radar, PolarArea } from 'react-chartjs-2';
+import { Bar, Pie, Doughnut, Line } from 'react-chartjs-2';
 import { GridLayout, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { api, TableInfo } from '../api';
@@ -386,7 +386,7 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
         pointRadius: config.chartType === 'radar' ? 3 : undefined,
       }],
     };
-  })();
+  })() as any;
 
   const tableName = tables.find((t) => t.id === config.tableId)?.name ?? '';
 
