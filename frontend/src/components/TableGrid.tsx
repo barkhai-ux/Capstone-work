@@ -77,12 +77,6 @@ export default function TableGrid({ table, onNormalize, onStarSchema, onDelete }
           </button>
         </div>
 
-        {/* Right side - search */}
-        <button className="toolbar-btn">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-          </svg>
-        </button>
       </div>
 
       {/* ── Grid ── */}
@@ -93,18 +87,13 @@ export default function TableGrid({ table, onNormalize, onStarSchema, onDelete }
           <table className="grid-table">
             <thead>
               <tr>
-                <th className="grid-rownum-header">
-                  <input type="checkbox" className="w-3 h-3 accent-blue-500" readOnly />
-                </th>
+                <th className="grid-rownum-header">#</th>
                 {table.columns.map((col) => (
                   <th key={col.name} className="grid-header-cell">
                     <div className="flex items-center gap-1.5 flex-1 min-w-0">
                       <FieldTypeIcon type={col.type} />
                       <span className="truncate">{col.name}</span>
                     </div>
-                    <svg className="w-3 h-3 text-gray-300 flex-shrink-0 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                    </svg>
                   </th>
                 ))}
               </tr>
@@ -113,7 +102,7 @@ export default function TableGrid({ table, onNormalize, onStarSchema, onDelete }
               {data.rows.map((row, i) => (
                 <tr
                   key={i}
-                  className="grid-row"
+                  className="grid-row cursor-pointer"
                   onClick={() => setExpandedRow(row)}
                 >
                   <td className="grid-rownum">{startRow + i + 1}</td>
@@ -124,16 +113,6 @@ export default function TableGrid({ table, onNormalize, onStarSchema, onDelete }
                   ))}
                 </tr>
               ))}
-              {/* Add row placeholder */}
-              <tr className="grid-add-row">
-                <td className="grid-rownum">
-                  <svg className="w-3 h-3 text-gray-300 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                  </svg>
-                </td>
-                <td colSpan={table.columns.length} className="grid-cell text-gray-300 text-xs">
-                </td>
-              </tr>
             </tbody>
           </table>
         ) : null}

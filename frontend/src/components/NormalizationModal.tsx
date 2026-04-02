@@ -16,13 +16,19 @@ export default function NormalizationModal({ open, tableId, tableName, onClose, 
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [hasRun, setHasRun] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setAnalysis(null);
     setError(null);
     setSuccess(null);
+    setHasRun(false);
+  }, [open, tableId]);
+
+  const handleAnalyze = () => {
     setAnalyzing(true);
+    setHasRun(true);
     api.analyzeNormalization(tableId)
       .then((r) => {
         if (r.success && r.data) {
@@ -34,9 +40,10 @@ export default function NormalizationModal({ open, tableId, tableName, onClose, 
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Analysis failed'))
       .finally(() => setAnalyzing(false));
-  }, [open, tableId]);
+  };
 
   const handleApply = async (dims: { name: string; columns: string[]; primaryKey?: string }[]) => {
+    if (!window.confirm('Apply normalization? This will restructure your table and cannot be undone.')) return;
     setApplying(true);
     setError(null);
     try {
@@ -62,6 +69,15 @@ export default function NormalizationModal({ open, tableId, tableName, onClose, 
       )}
       {success && (
         <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{success}</div>
+      )}
+
+      {!hasRun && !analyzing && (
+        <div className="text-center py-10">
+          <p className="text-sm text-gray-500 mb-4">Analyze this table for normalization opportunities using AI.</p>
+          <button onClick={handleAnalyze} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">
+            Run Analysis
+          </button>
+        </div>
       )}
 
       {analyzing && (

@@ -6,6 +6,7 @@ import TableGrid from './components/TableGrid';
 import UploadModal from './components/UploadModal';
 import NormalizationModal from './components/NormalizationModal';
 import StarSchemaModal from './components/StarSchemaModal';
+import { Toast, ToastState } from './components/Toast';
 
 interface ModalState {
   type: 'upload' | 'normalize' | 'star-schema' | null;
@@ -29,7 +30,7 @@ function formatQueryValue(v: unknown): string {
   return String(v);
 }
 
-function QueryResultsView({ result, error, onClose }: { result: QueryResult | null; error: string | null; onClose: () => void }) {
+function QueryResultsView({ result, error, onClose, tableName }: { result: QueryResult | null; error: string | null; onClose: () => void; tableName?: string }) {
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-white">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-gray-50">
@@ -39,6 +40,7 @@ function QueryResultsView({ result, error, onClose }: { result: QueryResult | nu
           </svg>
           Query Results
           {result && <span className="text-xs text-gray-400 font-normal">({result.totalRows} row{result.totalRows !== 1 ? 's' : ''})</span>}
+          {tableName && <span className="text-xs text-gray-400 ml-1">{tableName}</span>}
         </div>
         <button
           onClick={onClose}
@@ -107,6 +109,10 @@ export default function App() {
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') =>
+    setToast({ message, type, id: Date.now() });
 
   const loadTables = useCallback(async () => {
     const res = await api.listTables();
@@ -140,6 +146,7 @@ export default function App() {
       const updated = tables.filter((t) => t.id !== id);
       setTables(updated);
       if (selectedId === id) setSelectedId(updated[0]?.id ?? null);
+      showToast('Table deleted');
     }
   };
 
@@ -215,6 +222,7 @@ export default function App() {
               result={queryResult}
               error={queryError}
               onClose={() => { setQueryResult(null); setQueryError(null); setView(selectedId ? 'table' : 'dashboard'); }}
+              tableName={selectedTable?.name}
             />
           )
         ) : view === 'table' && selectedTable ? (
@@ -259,6 +267,8 @@ export default function App() {
           onApplied={handleApplied}
         />
       )}
+
+      {toast && <Toast key={toast.id} message={toast.message} type={toast.type} onDone={() => setToast(null)} />}
     </div>
   );
 }
