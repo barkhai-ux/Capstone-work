@@ -56,9 +56,24 @@ export type NormalizeAnalyzeInput = z.infer<typeof normalizeAnalyzeSchema>;
 export type NormalizeApplyInput = z.infer<typeof normalizeApplySchema>;
 export type StarSchemaAnalyzeInput = z.infer<typeof starSchemaAnalyzeSchema>;
 export const querySchema = z.object({
-  tableId: z.string().uuid(),
   question: z.string().min(1).max(1000),
+  history: z.array(z.object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string(),
+  })).max(20).optional(),
+});
+
+export const saveSnippetSchema = z.object({
+  name: z.string().min(1).max(200),
+  question: z.string().min(1).max(1000),
+  columns: z.array(z.string()),
+  rows: z.array(z.record(z.unknown())),
+});
+
+export const snippetIdSchema = z.object({
+  snippetId: z.string().uuid(),
 });
 
 export type StarSchemaApplyInput = z.infer<typeof starSchemaApplySchema>;
 export type QueryInput = z.infer<typeof querySchema>;
+export type SaveSnippetInput = z.infer<typeof saveSnippetSchema>;

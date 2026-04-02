@@ -2,13 +2,14 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement,
   PointElement, LineElement, Title, Tooltip, Legend, Filler,
+  RadialLinearScale,
 } from 'chart.js';
-import { Bar, Pie, Doughnut, Line } from 'react-chartjs-2';
+import { Bar, Pie, Doughnut, Line, Scatter, Radar, PolarArea } from 'react-chartjs-2';
 import { GridLayout, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { api, TableInfo } from '../api';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Title, Tooltip, Legend, Filler);
+ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, RadialLinearScale, Title, Tooltip, Legend, Filler);
 
 const DEFAULT_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
@@ -31,8 +32,12 @@ const COLOR_THEMES: { name: string; colors: string[] }[] = [
 const CHART_TYPES = [
   { value: 'bar', label: 'Bar' },
   { value: 'line', label: 'Line' },
+  { value: 'area', label: 'Area' },
   { value: 'pie', label: 'Pie' },
   { value: 'doughnut', label: 'Doughnut' },
+  { value: 'scatter', label: 'Scatter' },
+  { value: 'radar', label: 'Radar' },
+  { value: 'polarArea', label: 'Polar' },
 ] as const;
 
 const AGGREGATIONS = [
@@ -148,6 +153,60 @@ interface DashboardProps {
   onImport: () => void;
 }
 
+// ── Multi-dashboard persistence ──
+
+interface DashboardInstance {
+  id: string;
+  name: string;
+  widgets: WidgetConfig[];
+  layouts: Record<string, WidgetLayout>;
+  createdAt: string;
+}
+
+const DASHBOARDS_KEY = 'dashboard_instances';
+
+function loadDashboards(): DashboardInstance[] {
+  try {
+    const raw = localStorage.getItem(DASHBOARDS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDashboards(dashboards: DashboardInstance[]) {
+  localStorage.setItem(DASHBOARDS_KEY, JSON.stringify(dashboards));
+}
+
+function migrateIfNeeded(): DashboardInstance[] {
+  const existing = loadDashboards();
+  if (existing.length > 0) return existing;
+
+  let legacyWidgets: WidgetConfig[] = [];
+  let legacyLayouts: Record<string, WidgetLayout> = {};
+  try {
+    legacyWidgets = JSON.parse(localStorage.getItem('dashboard_widgets') ?? '[]');
+    legacyLayouts = JSON.parse(localStorage.getItem('dashboard_layouts') ?? '{}');
+  } catch { /* ignore */ }
+
+  if (legacyWidgets.length === 0) return [];
+
+  const migrated: DashboardInstance = {
+    id: crypto.randomUUID(),
+    name: 'My Dashboard',
+    widgets: legacyWidgets,
+    layouts: legacyLayouts,
+    createdAt: new Date().toISOString(),
+  };
+
+  const dashboards = [migrated];
+  saveDashboards(dashboards);
+  localStorage.removeItem('dashboard_widgets');
+  localStorage.removeItem('dashboard_layouts');
+
+  return dashboards;
+}
+
 function resolveValue(v: unknown): number | null {
   if (v === null || v === undefined) return null;
   if (typeof v === 'number') return v;
@@ -217,10 +276,24 @@ function PieIcon({ active }: { active?: boolean }) {
 function DoughnutIcon({ active }: { active?: boolean }) {
   return (<svg className={`w-5 h-5 ${active ? 'text-blue-600' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4" /></svg>);
 }
+function AreaIcon({ active }: { active?: boolean }) {
+  return (<svg className={`w-5 h-5 ${active ? 'text-blue-600' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22" /><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18h19.5V11.25L16.12 14.07a11.95 11.95 0 00-2.814-1.263L9 11.25 2.25 18z" opacity={0.3} /></svg>);
+}
+function ScatterIcon({ active }: { active?: boolean }) {
+  return (<svg className={`w-5 h-5 ${active ? 'text-blue-600' : 'text-gray-400'}`} fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="16" r="1.5" /><circle cx="9" cy="10" r="1.5" /><circle cx="14" cy="14" r="1.5" /><circle cx="11" cy="6" r="1.5" /><circle cx="18" cy="8" r="1.5" /><circle cx="17" cy="17" r="1.5" /><circle cx="7" cy="19" r="1.5" /></svg>);
+}
+function RadarIcon({ active }: { active?: boolean }) {
+  return (<svg className={`w-5 h-5 ${active ? 'text-blue-600' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><polygon points="12,2 20,8.5 17.5,18 6.5,18 4,8.5" /><polygon points="12,7 16,10.5 14.5,15 9.5,15 8,10.5" /></svg>);
+}
+function PolarIcon({ active }: { active?: boolean }) {
+  return (<svg className={`w-5 h-5 ${active ? 'text-blue-600' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><circle cx="12" cy="12" r="9" /><line x1="12" y1="3" x2="12" y2="21" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="5.5" y1="5.5" x2="18.5" y2="18.5" /><line x1="18.5" y1="5.5" x2="5.5" y2="18.5" /></svg>);
+}
 
 const CHART_ICON_MAP: Record<ChartType, (a: boolean) => JSX.Element> = {
   bar: (a) => <BarIcon active={a} />, line: (a) => <LineIcon active={a} />,
-  pie: (a) => <PieIcon active={a} />, doughnut: (a) => <DoughnutIcon active={a} />,
+  area: (a) => <AreaIcon active={a} />, pie: (a) => <PieIcon active={a} />,
+  doughnut: (a) => <DoughnutIcon active={a} />, scatter: (a) => <ScatterIcon active={a} />,
+  radar: (a) => <RadarIcon active={a} />, polarArea: (a) => <PolarIcon active={a} />,
 };
 
 // ── Color Input ──
@@ -255,8 +328,35 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
 
   const s = config.style ?? DEFAULT_STYLE;
 
+  const isLine = config.chartType === 'line' || config.chartType === 'area';
+
   const chartData = (() => {
     if (!data || data.length === 0) return null;
+
+    // Scatter chart: raw x/y points, no grouping
+    if (config.chartType === 'scatter') {
+      const points: { x: number; y: number }[] = [];
+      for (const row of data) {
+        const x = resolveValue(row[config.labelColumn]);
+        const y = resolveValue(row[config.valueColumn]);
+        if (x !== null && y !== null) points.push({ x, y });
+      }
+      const limit = config.topN ?? 0;
+      const sliced = limit > 0 ? points.slice(0, limit) : points;
+      const colors = s.chartColors.length > 0 ? s.chartColors : DEFAULT_COLORS;
+      return {
+        datasets: [{
+          label: `${config.labelColumn} vs ${config.valueColumn}`,
+          data: sliced,
+          backgroundColor: colors[0] + '99',
+          borderColor: colors[0],
+          pointBackgroundColor: colors[0],
+          pointRadius: 4,
+          pointHoverRadius: 6,
+        }],
+      };
+    }
+
     const dg = config.dateGrouping ?? 'none';
     const groups: Record<string, number[]> = {};
     for (const row of data) {
@@ -269,8 +369,8 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
     const mapped = Object.entries(groups)
       .map(([label, vals]) => [label, aggregate(vals, config.aggregation)] as const);
     const sorted = dg !== 'none'
-      ? mapped.sort((a, b) => a[0].localeCompare(b[0]))  // chronological for dates
-      : mapped.sort((a, b) => b[1] - a[1]);               // by value for non-dates
+      ? mapped.sort((a, b) => a[0].localeCompare(b[0]))
+      : mapped.sort((a, b) => b[1] - a[1]);
     const entries = limit > 0 ? sorted.slice(0, limit) : sorted;
     const colors = s.chartColors.length > 0 ? s.chartColors : DEFAULT_COLORS;
     return {
@@ -278,11 +378,12 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       datasets: [{
         label: `${config.aggregation.charAt(0).toUpperCase() + config.aggregation.slice(1)} of ${config.valueColumn}`,
         data: entries.map(([, v]) => Math.round(v * 100) / 100),
-        backgroundColor: config.chartType === 'line' ? `${s.lineColor}18` : colors.slice(0, entries.length),
-        borderColor: config.chartType === 'line' ? s.lineColor : config.chartType === 'bar' ? colors.slice(0, entries.length).map(c => c + 'cc') : colors.slice(0, entries.length),
-        fill: config.chartType === 'line',
-        borderWidth: config.chartType === 'line' ? 2.5 : (config.chartType === 'bar' ? 0 : 2),
-        pointBackgroundColor: config.chartType === 'line' ? s.lineColor : undefined,
+        backgroundColor: isLine ? `${s.lineColor}18` : config.chartType === 'radar' ? `${colors[0]}33` : colors.slice(0, entries.length),
+        borderColor: isLine ? s.lineColor : config.chartType === 'radar' ? colors[0] : config.chartType === 'bar' ? colors.slice(0, entries.length).map(c => c + 'cc') : colors.slice(0, entries.length),
+        fill: isLine || config.chartType === 'radar',
+        borderWidth: isLine ? 2.5 : config.chartType === 'radar' ? 2 : (config.chartType === 'bar' ? 0 : 2),
+        pointBackgroundColor: isLine || config.chartType === 'radar' ? s.lineColor : undefined,
+        pointRadius: config.chartType === 'radar' ? 3 : undefined,
       }],
     };
   })();
@@ -300,7 +401,16 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       x: {
         title: { display: !!s.xAxisLabel, text: s.xAxisLabel, color: s.axisLabelColor, font: { size: s.axisLabelSize } },
         grid: { display: false },
-        ticks: { font: { size: s.axisLabelSize - 1 }, color: s.axisLabelColor, maxRotation: 45 },
+        ticks: {
+          font: { size: s.axisLabelSize - 1 },
+          color: s.axisLabelColor,
+          maxRotation: 45,
+          callback: function(this: unknown, _val: unknown, index: number) {
+            const label = chartData?.labels?.[index];
+            const str = typeof label === 'string' ? label : String(label ?? '');
+            return str.length > 16 ? str.slice(0, 16) + '...' : str;
+          },
+        },
         border: { display: false },
       },
       y: {
@@ -491,6 +601,193 @@ function DataTableWidget({ config, onDelete, onUpdate }: {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Dashboard Home (Power BI style card grid) ──
+
+function DashboardHome({ dashboards, onSelect, onNew, onDelete, onRename }: {
+  dashboards: DashboardInstance[];
+  onSelect: (id: string) => void;
+  onNew: () => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+}) {
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+
+  const formatDate = (iso: string) => {
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'Just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 7) return `${days}d ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+  };
+
+  const getWidgetSummary = (db: DashboardInstance) => {
+    const charts = db.widgets.filter(w => (w.widgetType ?? 'chart') === 'chart').length;
+    const texts = db.widgets.filter(w => w.widgetType === 'text').length;
+    const tables = db.widgets.filter(w => w.widgetType === 'table').length;
+    const parts: string[] = [];
+    if (charts > 0) parts.push(`${charts} chart${charts > 1 ? 's' : ''}`);
+    if (tables > 0) parts.push(`${tables} table${tables > 1 ? 's' : ''}`);
+    if (texts > 0) parts.push(`${texts} text`);
+    return parts.length > 0 ? parts.join(', ') : 'Empty';
+  };
+
+  return (
+    <div className="flex-1 overflow-auto bg-gray-50">
+      <div className="max-w-5xl mx-auto px-8 py-8">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-xl font-bold text-gray-800">Dashboards</h1>
+          <p className="text-sm text-gray-400 mt-1">Create and manage your data dashboards</p>
+        </div>
+
+        {/* Card grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+          {/* New Dashboard card */}
+          <button
+            onClick={onNew}
+            className="group flex flex-col items-center justify-center h-52 rounded-xl border-2 border-dashed border-gray-200 bg-white hover:border-blue-400 hover:bg-blue-50/50 transition-all cursor-pointer"
+          >
+            <div className="w-12 h-12 rounded-xl bg-blue-50 group-hover:bg-blue-100 flex items-center justify-center mb-3 transition-colors">
+              <svg className="w-6 h-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+            </div>
+            <span className="text-sm font-medium text-gray-500 group-hover:text-blue-600 transition-colors">New Dashboard</span>
+          </button>
+
+          {/* Dashboard cards */}
+          {dashboards.map(db => (
+            <div
+              key={db.id}
+              className="group relative flex flex-col h-52 rounded-xl border border-gray-200 bg-white hover:shadow-lg hover:border-blue-300 transition-all cursor-pointer overflow-hidden"
+              onClick={() => onSelect(db.id)}
+            >
+              {/* Preview area */}
+              <div className="flex-1 bg-gradient-to-br from-gray-50 to-gray-100 p-3 flex items-center justify-center min-h-0">
+                {db.widgets.length === 0 ? (
+                  <div className="text-center">
+                    <svg className="w-8 h-8 text-gray-200 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                    </svg>
+                    <p className="text-[10px] text-gray-300 mt-1">No widgets yet</p>
+                  </div>
+                ) : (
+                  /* Mini widget preview grid */
+                  <div className="w-full h-full grid grid-cols-4 grid-rows-3 gap-1">
+                    {db.widgets.slice(0, 6).map(w => {
+                      const wt = w.widgetType ?? 'chart';
+                      const ly = db.layouts[w.id];
+                      const colSpan = ly ? Math.min(ly.w > 4 ? 2 : 1, 4) : (wt === 'text' ? 1 : 2);
+                      const rowSpan = ly ? Math.min(ly.h > 3 ? 2 : 1, 3) : (wt === 'text' ? 1 : 2);
+                      const colors: Record<string, string> = {
+                        chart: 'bg-blue-200/60 border-blue-300/40',
+                        text: 'bg-amber-200/60 border-amber-300/40',
+                        table: 'bg-emerald-200/60 border-emerald-300/40',
+                      };
+                      return (
+                        <div
+                          key={w.id}
+                          className={`rounded border ${colors[wt] ?? 'bg-gray-200/60 border-gray-300/40'} flex items-center justify-center`}
+                          style={{ gridColumn: `span ${colSpan}`, gridRow: `span ${rowSpan}` }}
+                        >
+                          {wt === 'chart' && (
+                            <svg className="w-4 h-4 text-blue-400/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                            </svg>
+                          )}
+                          {wt === 'text' && (
+                            <svg className="w-3.5 h-3.5 text-amber-400/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
+                            </svg>
+                          )}
+                          {wt === 'table' && (
+                            <svg className="w-3.5 h-3.5 text-emerald-400/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M12 12h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125M21.375 12c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125M12 17.25v-5.625m0 5.625c0 .621.504 1.125 1.125 1.125h2.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H12m0 3.75c0 .621-.504 1.125-1.125 1.125H8.625A1.125 1.125 0 017.5 17.25v-1.5c0-.621.504-1.125 1.125-1.125H12" />
+                            </svg>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Card footer */}
+              <div className="px-3 py-2.5 border-t border-gray-100">
+                {renamingId === db.id ? (
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onClick={e => e.stopPropagation()}
+                    onBlur={() => { onRename(db.id, renameValue.trim() || db.name); setRenamingId(null); }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { onRename(db.id, renameValue.trim() || db.name); setRenamingId(null); }
+                      if (e.key === 'Escape') setRenamingId(null);
+                    }}
+                    className="w-full px-1.5 py-0.5 text-sm font-semibold border border-blue-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  />
+                ) : (
+                  <h3
+                    className="text-sm font-semibold text-gray-700 truncate"
+                    onDoubleClick={e => { e.stopPropagation(); setRenamingId(db.id); setRenameValue(db.name); }}
+                  >
+                    {db.name}
+                  </h3>
+                )}
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-[11px] text-gray-400">{getWidgetSummary(db)}</span>
+                  <span className="text-[10px] text-gray-300">{formatDate(db.createdAt)}</span>
+                </div>
+              </div>
+
+              {/* Hover action buttons */}
+              <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  onClick={e => { e.stopPropagation(); setRenamingId(db.id); setRenameValue(db.name); }}
+                  className="w-7 h-7 rounded-lg bg-white/90 border border-gray-200 shadow-sm flex items-center justify-center text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors"
+                  title="Rename"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                  </svg>
+                </button>
+                {deletingId === db.id ? (
+                  <div onClick={e => e.stopPropagation()} className="flex items-center gap-1 px-2 py-1 bg-white rounded-lg border border-red-200 shadow-sm">
+                    <span className="text-[10px] text-gray-500">Delete?</span>
+                    <button onClick={() => { onDelete(db.id); setDeletingId(null); }}
+                      className="text-[10px] font-semibold text-red-600 hover:underline">Yes</button>
+                    <button onClick={() => setDeletingId(null)}
+                      className="text-[10px] text-gray-400 hover:underline">No</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={e => { e.stopPropagation(); setDeletingId(db.id); }}
+                    className="w-7 h-7 rounded-lg bg-white/90 border border-gray-200 shadow-sm flex items-center justify-center text-gray-400 hover:text-red-500 hover:border-red-300 transition-colors"
+                    title="Delete"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1013,15 +1310,19 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
 // ── Dashboard ──
 
 export default function Dashboard({ tables, onImport }: DashboardProps) {
-  const [widgets, setWidgets] = useState<WidgetConfig[]>(() => {
-    try { return JSON.parse(localStorage.getItem('dashboard_widgets') ?? '[]'); } catch { return []; }
-  });
-  const [layouts, setLayouts] = useState<Record<string, WidgetLayout>>(() => {
-    try { return JSON.parse(localStorage.getItem('dashboard_layouts') ?? '{}'); } catch { return {}; }
-  });
+  const [dashboards, setDashboards] = useState<DashboardInstance[]>(migrateIfNeeded);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [editing, setEditing] = useState<WidgetConfig | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [canvasWidth, setCanvasWidth] = useState(800);
+
+  const activeDashboard = dashboards.find(d => d.id === activeId) ?? null;
+  const widgets = activeDashboard?.widgets ?? [];
+  const layouts = activeDashboard?.layouts ?? {};
+
+  useEffect(() => {
+    saveDashboards(dashboards);
+  }, [dashboards]);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -1034,12 +1335,54 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
     return () => ro.disconnect();
   }, []);
 
-  const save = useCallback((w: WidgetConfig[], l: Record<string, WidgetLayout>) => {
-    setWidgets(w); setLayouts(l);
-    localStorage.setItem('dashboard_widgets', JSON.stringify(w));
-    localStorage.setItem('dashboard_layouts', JSON.stringify(l));
-  }, []);
+  const updateActiveDashboard = useCallback((w: WidgetConfig[], l: Record<string, WidgetLayout>) => {
+    if (!activeId) return;
+    setDashboards(prev => prev.map(d =>
+      d.id === activeId ? { ...d, widgets: w, layouts: l } : d
+    ));
+  }, [activeId]);
 
+  // Dashboard CRUD
+  const handleNewDashboard = () => {
+    const newDb: DashboardInstance = {
+      id: crypto.randomUUID(),
+      name: 'New Dashboard',
+      widgets: [],
+      layouts: {},
+      createdAt: new Date().toISOString(),
+    };
+    setDashboards(prev => [newDb, ...prev]);
+    setActiveId(newDb.id);
+    setEditing(null);
+  };
+
+  const handleDeleteDashboard = (dbId: string) => {
+    setDashboards(prev => {
+      const updated = prev.filter(d => d.id !== dbId);
+      if (activeId === dbId) {
+        setActiveId(updated.length > 0 ? updated[0].id : null);
+      }
+      return updated;
+    });
+  };
+
+  const handleSelectDashboard = (dbId: string) => {
+    setActiveId(dbId);
+    setEditing(null);
+  };
+
+  const handleBackToHome = () => {
+    setActiveId(null);
+    setEditing(null);
+  };
+
+  const handleRenameDashboard = (dbId: string, name: string) => {
+    setDashboards(prev => prev.map(d =>
+      d.id === dbId ? { ...d, name } : d
+    ));
+  };
+
+  // Widget handlers
   const handleAdd = (cfg: WidgetConfig) => {
     const maxY = widgets.reduce((m, w) => {
       const ly = layouts[w.id];
@@ -1048,7 +1391,7 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
     const wt = cfg.widgetType ?? 'chart';
     const size = wt === 'text' ? { w: 3, h: 2 } : wt === 'table' ? { w: 6, h: 4 } : { w: 6, h: 4 };
     const newLayouts = { ...layouts, [cfg.id]: { x: 0, y: maxY, ...size } };
-    save([...widgets, cfg], newLayouts);
+    updateActiveDashboard([...widgets, cfg], newLayouts);
   };
 
   const handleAddMultiple = (cfgs: WidgetConfig[]) => {
@@ -1065,34 +1408,35 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
       col += size.w;
       if (col >= 12) { col = 0; currentMaxY += size.h; }
     }
-    save([...widgets, ...cfgs], newLayouts);
+    updateActiveDashboard([...widgets, ...cfgs], newLayouts);
   };
 
   const handleUpdate = (cfg: WidgetConfig) => {
-    save(widgets.map((w) => w.id === cfg.id ? cfg : w), layouts);
+    updateActiveDashboard(widgets.map((w) => w.id === cfg.id ? cfg : w), layouts);
     setEditing(null);
   };
 
   const handleInlineUpdate = useCallback((cfg: WidgetConfig) => {
-    setWidgets((prev) => {
-      const next = prev.map((w) => w.id === cfg.id ? cfg : w);
-      localStorage.setItem('dashboard_widgets', JSON.stringify(next));
-      return next;
-    });
-  }, []);
+    setDashboards(prev => prev.map(d =>
+      d.id === activeId
+        ? { ...d, widgets: d.widgets.map(w => w.id === cfg.id ? cfg : w) }
+        : d
+    ));
+  }, [activeId]);
 
   const handleDelete = (id: string) => {
     const nl = { ...layouts }; delete nl[id];
-    save(widgets.filter((w) => w.id !== id), nl);
+    updateActiveDashboard(widgets.filter((w) => w.id !== id), nl);
     if (editing?.id === id) setEditing(null);
   };
 
   const handleLayoutChange = useCallback((layout: Layout) => {
     const nl: Record<string, WidgetLayout> = {};
     for (const l of layout) nl[l.i] = { x: l.x, y: l.y, w: l.w, h: l.h };
-    setLayouts(nl);
-    localStorage.setItem('dashboard_layouts', JSON.stringify(nl));
-  }, []);
+    setDashboards(prev => prev.map(d =>
+      d.id === activeId ? { ...d, layouts: nl } : d
+    ));
+  }, [activeId]);
 
   const gridLayout = useMemo(() =>
     widgets.map((w, i) => {
@@ -1121,45 +1465,90 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
     </div>
   );
 
-  return (
-    <div className="flex-1 flex min-h-0">
-      {/* Canvas */}
-      <div ref={canvasRef} className="flex-1 overflow-auto bg-gray-50 min-w-0">
+  // No active dashboard — show Power BI-style home
+  if (!activeDashboard) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
         {tables.length === 0 ? (
-          emptyState('No data to visualize', 'Import data first to start building charts',
-            <button onClick={onImport} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors">Import Data</button>
-          )
-        ) : widgets.length === 0 ? (
-          emptyState('Your dashboard is empty', 'Configure a chart in the toolbox and click "Add to Dashboard"')
-        ) : (
-          <GridLayout
-            className="p-4"
-            layout={gridLayout}
-            gridConfig={{ cols: 12, rowHeight: 60 }}
-            dragConfig={{ enabled: true, handle: '.drag-handle' }}
-            resizeConfig={{ enabled: true }}
-            width={canvasWidth - 32}
-            onLayoutChange={handleLayoutChange}
-          >
-            {widgets.map((w) => (
-              <div key={w.id}>
-                {(w.widgetType ?? 'chart') === 'chart' ? (
-                  <ChartWidget config={w as ChartWidgetConfig} tables={tables} onEdit={() => setEditing(w)} onDelete={() => handleDelete(w.id)} />
-                ) : w.widgetType === 'text' ? (
-                  <TextWidget config={w as TextWidgetConfig} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
-                ) : (
-                  <DataTableWidget config={w as TableWidgetConfig} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
-                )}
+          <div className="flex-1 flex items-center justify-center bg-gray-50">
+            <div className="text-center">
+              <div className="mx-auto w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+                <svg className="w-7 h-7 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                </svg>
               </div>
-            ))}
-          </GridLayout>
+              <h3 className="text-sm font-semibold text-gray-600 mb-1">No data to visualize</h3>
+              <p className="text-xs text-gray-400 mb-4">Import data first to start building charts</p>
+              <button onClick={onImport} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors">Import Data</button>
+            </div>
+          </div>
+        ) : (
+          <DashboardHome
+            dashboards={dashboards}
+            onSelect={handleSelectDashboard}
+            onNew={handleNewDashboard}
+            onDelete={handleDeleteDashboard}
+            onRename={handleRenameDashboard}
+          />
         )}
       </div>
+    );
+  }
 
-      {/* Right Sidebar Toolbox */}
-      {tables.length > 0 && (
-        <Toolbox tables={tables} editing={editing} onAdd={handleAdd} onAddMultiple={handleAddMultiple} onUpdate={handleUpdate} onCancelEdit={() => setEditing(null)} />
-      )}
+  // Active dashboard — show canvas view
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Top bar with back button and dashboard name */}
+      <div className="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-gray-200 flex-shrink-0">
+        <button
+          onClick={handleBackToHome}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+          </svg>
+          Dashboards
+        </button>
+        <div className="w-px h-5 bg-gray-200" />
+        <h2 className="text-sm font-semibold text-gray-700 truncate">{activeDashboard.name}</h2>
+        <span className="text-[11px] text-gray-400">{widgets.length} widget{widgets.length !== 1 ? 's' : ''}</span>
+      </div>
+
+      {/* Canvas + Toolbox */}
+      <div className="flex-1 flex min-h-0">
+        <div ref={canvasRef} className="flex-1 overflow-auto bg-gray-50 min-w-0">
+          {widgets.length === 0 ? (
+            emptyState('Your dashboard is empty', 'Configure a chart in the toolbox and click "Add to Dashboard"')
+          ) : (
+            <GridLayout
+              className="p-4"
+              layout={gridLayout}
+              gridConfig={{ cols: 12, rowHeight: 60 }}
+              dragConfig={{ enabled: true, handle: '.drag-handle' }}
+              resizeConfig={{ enabled: true }}
+              width={canvasWidth - 32}
+              onLayoutChange={handleLayoutChange}
+            >
+              {widgets.map((w) => (
+                <div key={w.id}>
+                  {(w.widgetType ?? 'chart') === 'chart' ? (
+                    <ChartWidget config={w as ChartWidgetConfig} tables={tables} onEdit={() => setEditing(w)} onDelete={() => handleDelete(w.id)} />
+                  ) : w.widgetType === 'text' ? (
+                    <TextWidget config={w as TextWidgetConfig} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
+                  ) : (
+                    <DataTableWidget config={w as TableWidgetConfig} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
+                  )}
+                </div>
+              ))}
+            </GridLayout>
+          )}
+        </div>
+
+        {/* Right Sidebar Toolbox */}
+        {tables.length > 0 && (
+          <Toolbox tables={tables} editing={editing} onAdd={handleAdd} onAddMultiple={handleAddMultiple} onUpdate={handleUpdate} onCancelEdit={() => setEditing(null)} />
+        )}
+      </div>
     </div>
   );
 }

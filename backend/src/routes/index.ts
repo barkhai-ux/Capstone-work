@@ -5,6 +5,7 @@ import normalizationRoutes from './normalization.routes.js';
 import starSchemaRoutes from './star-schema.routes.js';
 import queryRoutes from './query.routes.js';
 import chartRoutes from './chart.routes.js';
+import snippetsRoutes from './snippets.routes.js';
 
 const router = Router();
 
@@ -26,5 +27,6 @@ router.use('/normalization', normalizationRoutes);
 router.use('/star-schema', starSchemaRoutes);
 router.use('/query', queryRoutes);
 router.use('/chart', chartRoutes);
+router.use('/snippets', snippetsRoutes);
 
 export default router;

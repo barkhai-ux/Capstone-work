@@ -1,18 +1,17 @@
-import { useState, useRef, useEffect, FormEvent } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { TableInfo } from '../api';
 
 interface SidebarProps {
   tables: TableInfo[];
   selectedId: string | null;
-  view: 'dashboard' | 'table' | 'query';
+  view: 'dashboard' | 'table' | 'ask-data';
   onSelect: (id: string) => void;
   onDashboard: () => void;
+  onAskData: () => void;
   onImport: () => void;
   onDelete: (id: string) => void;
   onNormalize: (id: string) => void;
   onStarSchema: (id: string) => void;
-  onQuery: (tableId: string, question: string) => void;
-  queryLoading: boolean;
 }
 
 export default function Sidebar({
@@ -21,15 +20,13 @@ export default function Sidebar({
   view,
   onSelect,
   onDashboard,
+  onAskData,
   onImport,
   onDelete,
   onNormalize,
   onStarSchema,
-  onQuery,
-  queryLoading,
 }: SidebarProps) {
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  const [question, setQuestion] = useState('');
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -76,6 +73,23 @@ export default function Sidebar({
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
             </svg>
             Dashboard
+          </button>
+        </div>
+
+        {/* Ask Your Data */}
+        <div className="px-1">
+          <button
+            onClick={onAskData}
+            className={`flex items-center gap-2 w-full px-2.5 py-[6px] rounded-md text-[13px] transition-colors ${
+              view === 'ask-data'
+                ? 'bg-blue-50 text-blue-700 font-medium'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+            </svg>
+            Ask Your Data
           </button>
         </div>
 
@@ -178,57 +192,6 @@ export default function Sidebar({
           </div>
         </div>
       </nav>
-
-      {/* Query Section */}
-      <div className="border-t border-gray-200 px-3 py-3">
-        <div className="flex items-center gap-1.5 mb-2">
-          <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-          </svg>
-          <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Ask your data</span>
-        </div>
-        <form onSubmit={(e: FormEvent) => {
-          e.preventDefault();
-          if (!question.trim() || !selectedId || queryLoading) return;
-          onQuery(selectedId, question.trim());
-        }}>
-          <textarea
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                if (question.trim() && selectedId && !queryLoading) {
-                  onQuery(selectedId, question.trim());
-                }
-              }
-            }}
-            placeholder={selectedId ? 'Ask a question about your data...' : 'Select a table first'}
-            disabled={!selectedId || queryLoading}
-            rows={3}
-            className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2 text-[12px] text-gray-700 placeholder-gray-400 resize-none focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400 disabled:opacity-50"
-          />
-          <button
-            type="submit"
-            disabled={!question.trim() || !selectedId || queryLoading}
-            className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-3 py-[6px] rounded-lg text-[12px] font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-400 transition-colors"
-          >
-            {queryLoading ? (
-              <>
-                <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Querying...
-              </>
-            ) : (
-              <>
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-                </svg>
-                Ask
-              </>
-            )}
-          </button>
-        </form>
-      </div>
 
       {/* Context Menu */}
       {contextMenu && (
