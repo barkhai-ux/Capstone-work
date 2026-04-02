@@ -37,3 +37,7 @@ export const config = {
 export const getAbsolutePath = (relativePath: string): string => {
   return path.resolve(process.cwd(), relativePath);
 };
+
+if (!config.groqApiKey) {
+  console.warn('WARNING: GROQ_API_KEY is not set. AI features will fail.');
+}

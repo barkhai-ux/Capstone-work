@@ -1425,6 +1425,7 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
   }, [activeId]);
 
   const handleDelete = (id: string) => {
+    if (!window.confirm('Delete this widget?')) return;
     const nl = { ...layouts }; delete nl[id];
     updateActiveDashboard(widgets.filter((w) => w.id !== id), nl);
     if (editing?.id === id) setEditing(null);

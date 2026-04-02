@@ -34,6 +34,7 @@ export default function StarSchemaModal({ open, tableId, tableName, onClose, onA
 
   const handleApply = async () => {
     if (!rec) return;
+    if (!window.confirm('Apply star schema? The original table will be replaced and this cannot be undone.')) return;
     setApplying(true);
     setError(null);
     try {

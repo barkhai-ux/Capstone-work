@@ -28,6 +28,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -49,12 +50,13 @@ export default function Sidebar({
     <aside className="sidebar">
       {/* Search */}
       <div className="px-3 pt-3 pb-2">
-        <div className="flex items-center gap-2 px-2.5 py-[7px] bg-gray-100 rounded-md text-gray-400 text-[13px]">
-          <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-          </svg>
-          <span>Search...</span>
-        </div>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search tables..."
+          className="w-full flex items-center gap-2 px-2.5 py-[7px] bg-gray-100 rounded-md text-gray-600 text-[13px] focus:outline-none focus:ring-1 focus:ring-blue-400"
+        />
       </div>
 
       {/* Main nav */}
@@ -124,7 +126,7 @@ export default function Sidebar({
                   No tables yet
                 </div>
               )}
-              {tables.map((t) => (
+              {tables.filter(t => t.name.toLowerCase().includes(search.toLowerCase())).map((t) => (
                 <div key={t.id}>
                   <div
                     onClick={() => onSelect(t.id)}
@@ -178,16 +180,6 @@ export default function Sidebar({
                 </div>
               ))}
 
-              {/* + New table */}
-              <button
-                onClick={onImport}
-                className="flex items-center gap-2 w-full px-2.5 py-[6px] text-[13px] text-gray-400 hover:text-gray-600 rounded transition-colors"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                </svg>
-                New table
-              </button>
             </div>
           </div>
         </div>
@@ -198,7 +190,10 @@ export default function Sidebar({
         <div
           ref={menuRef}
           className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[160px]"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
+          style={{
+            top: Math.min(contextMenu.y, window.innerHeight - 140),
+            left: Math.min(contextMenu.x, window.innerWidth - 180),
+          }}
         >
           <button
             onClick={() => { onNormalize(contextMenu.id); setContextMenu(null); }}

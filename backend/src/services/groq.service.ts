@@ -32,6 +32,13 @@ interface GroqNormalizationResponse {
   overallRecommendation: string;
 }
 
+function sanitizePromptInput(input: string, maxLength = 500): string {
+  return input
+    .slice(0, maxLength)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // strip control chars
+    .trim();
+}
+
 /**
  * Post-process AI dimension results: deterministically detect existing PK columns
  * in each dimension group. If the AI missed setting primaryKey but there's clearly
@@ -352,6 +359,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
     prompt: string
   ): Promise<Record<string, unknown>> {
     const client = this.getClient();
+    const sanitizedPrompt = sanitizePromptInput(prompt);
 
     const tablesDescription = tables.map((t) => {
       const cols = t.columns.map((c) => `  - "${c.name}" (${c.type})`).join('\n');
@@ -367,7 +375,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
 
 ${tablesDescription}
 
-User request: "${prompt}"
+User request: "${sanitizedPrompt}"
 
 Rules:
 1. Choose the best chartType: "bar", "line", "pie", or "doughnut" based on the user's request.
@@ -434,7 +442,7 @@ Respond ONLY with valid JSON:
       throw new Error('AI returned invalid JSON. Please try again.');
     }
 
-    logger.info(`Generated chart config for: "${prompt}"`);
+    logger.info(`Generated chart config for: "${sanitizedPrompt}"`);
     return parsed;
   }
 
@@ -443,6 +451,7 @@ Respond ONLY with valid JSON:
     prompt: string
   ): Promise<Record<string, unknown>[]> {
     const client = this.getClient();
+    const sanitizedPrompt = sanitizePromptInput(prompt);
 
     const tablesDescription = tables.map((t) => {
       const cols = t.columns.map((c) => `  - "${c.name}" (${c.type})`).join('\n');
@@ -458,7 +467,7 @@ Respond ONLY with valid JSON:
 
 ${tablesDescription}
 
-User request: "${prompt}"
+User request: "${sanitizedPrompt}"
 
 Design a dashboard with 4-8 well-chosen widgets. Mix different chart types for visual variety. Include:
 - Key metric overview charts (bar/doughnut for top categories)
@@ -543,7 +552,7 @@ Respond ONLY with a valid JSON array:
       throw new Error('AI response is not an array');
     }
 
-    logger.info(`Generated dashboard with ${parsed.length} widgets for: "${prompt}"`);
+    logger.info(`Generated dashboard with ${parsed.length} widgets for: "${sanitizedPrompt}"`);
     return parsed;
   }
 
@@ -553,6 +562,7 @@ Respond ONLY with a valid JSON array:
     history?: { role: 'user' | 'assistant'; content: string }[]
   ): Promise<string> {
     const client = this.getClient();
+    const sanitizedQuestion = sanitizePromptInput(question);
 
     const tablesDescription = tables.map((t) => {
       const cols = t.columns.map((c) => `  - "${c.name}" (${c.type})`).join('\n');
@@ -619,17 +629,25 @@ Rules:
     }
 
     // Safety: only allow SELECT
-    const normalized = sql.replace(/--.*$/gm, '').trim().toUpperCase();
+    const normalized = sql
+      .replace(/\/\*[\s\S]*?\*\//g, '')  // block comments
+      .replace(/--.*$/gm, '')             // line comments
+      .trim()
+      .toUpperCase();
     if (!normalized.startsWith('SELECT')) {
       throw new Error('AI generated a non-SELECT query. Only read queries are allowed.');
     }
 
-    const forbidden = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i;
-    if (forbidden.test(sql)) {
+    if (normalized.includes(';')) {
+      throw new Error('AI generated a query with multiple statements. Only single queries are allowed.');
+    }
+
+    const forbidden = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|COPY|ATTACH|READ_CSV|READ_PARQUET|HTTPFS|INSTALL|LOAD)\b/;
+    if (forbidden.test(normalized)) {
       throw new Error('AI generated a query with forbidden operations.');
     }
 
-    logger.info(`Generated SQL for question: "${question}" → ${sql}`);
+    logger.info(`Generated SQL for question: "${sanitizedQuestion}" → ${sql}`);
     return sql;
   }
 }

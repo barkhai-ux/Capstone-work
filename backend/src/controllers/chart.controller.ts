@@ -1,16 +1,22 @@
 import { Request, Response } from 'express';
+import { z } from 'zod';
 import { asyncHandler } from '../middleware/error-handler.js';
 import { sendSuccess, sendBadRequest } from '../utils/response.js';
 import { duckdbService } from '../services/duckdb.service.js';
 import { groqService } from '../services/groq.service.js';
 import logger from '../utils/logger.js';
 
+const chartRequestSchema = z.object({
+  prompt: z.string().min(1, 'prompt must not be empty').max(500, 'prompt must be 500 characters or fewer'),
+});
+
 export const generateChart = asyncHandler(
   async (req: Request, res: Response) => {
-    const { prompt } = req.body;
-    if (!prompt || typeof prompt !== 'string') {
-      return sendBadRequest(res, 'prompt is required');
+    const validation = chartRequestSchema.safeParse(req.body);
+    if (!validation.success) {
+      return sendBadRequest(res, validation.error.errors[0]?.message ?? 'Invalid request');
     }
+    const { prompt } = validation.data;
 
     const allTables = await duckdbService.listTables();
     if (allTables.length === 0) {
@@ -57,10 +63,11 @@ export const generateChart = asyncHandler(
 
 export const generateDashboard = asyncHandler(
   async (req: Request, res: Response) => {
-    const { prompt } = req.body;
-    if (!prompt || typeof prompt !== 'string') {
-      return sendBadRequest(res, 'prompt is required');
+    const validation = chartRequestSchema.safeParse(req.body);
+    if (!validation.success) {
+      return sendBadRequest(res, validation.error.errors[0]?.message ?? 'Invalid request');
     }
+    const { prompt } = validation.data;
 
     const allTables = await duckdbService.listTables();
     if (allTables.length === 0) {

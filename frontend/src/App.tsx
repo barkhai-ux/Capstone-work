@@ -7,6 +7,7 @@ import AskData from './components/AskData';
 import UploadModal from './components/UploadModal';
 import NormalizationModal from './components/NormalizationModal';
 import StarSchemaModal from './components/StarSchemaModal';
+import { Toast, ToastState } from './components/Toast';
 
 interface ModalState {
   type: 'upload' | 'normalize' | 'star-schema' | null;
@@ -53,6 +54,7 @@ export default function App() {
       const updated = tables.filter((t) => t.id !== id);
       setTables(updated);
       if (selectedId === id) setSelectedId(updated[0]?.id ?? null);
+      showToast('Table deleted');
     }
   };
 
@@ -139,6 +141,8 @@ export default function App() {
           onApplied={handleApplied}
         />
       )}
+
+      {toast && <Toast key={toast.id} message={toast.message} type={toast.type} onDone={() => setToast(null)} />}
     </div>
   );
 }

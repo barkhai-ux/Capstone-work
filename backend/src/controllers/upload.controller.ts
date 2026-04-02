@@ -152,7 +152,7 @@ export const commitUpload = asyncHandler(async (req: Request, res: Response) => 
     });
   } catch (error) {
     logger.error('Failed to commit upload:', error);
-    throw new AppError(`Failed to create table: ${(error as Error).message}`, 500);
+    throw new AppError('Failed to create table. Please check your file format and try again.', 500);
   }
 });
 

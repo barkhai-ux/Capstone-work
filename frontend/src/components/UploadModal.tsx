@@ -2,6 +2,16 @@ import { useState, useCallback } from 'react';
 import Modal from './Modal';
 import { api, UploadPreview } from '../api';
 
+function friendlyType(type: string): string {
+  const t = type.toUpperCase();
+  if (t.includes('INT') || t.includes('FLOAT') || t.includes('DOUBLE') || t.includes('DECIMAL') || t.includes('NUMERIC')) return 'Number';
+  if (t === 'BOOLEAN') return 'Boolean';
+  if (t.includes('DATE')) return 'Date';
+  if (t.includes('TIMESTAMP') || t.includes('TIME')) return 'DateTime';
+  if (t.includes('JSON') || t.includes('OBJECT')) return 'JSON';
+  return 'Text';
+}
+
 interface UploadModalProps {
   open: boolean;
   onClose: () => void;
@@ -158,7 +168,7 @@ export default function UploadModal({ open, onClose, onSuccess }: UploadModalPro
                   className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 border border-gray-200 rounded text-xs"
                 >
                   <span className="text-gray-700">{col.name}</span>
-                  <span className="text-gray-400">{col.type}</span>
+                  <span className="text-gray-400">{friendlyType(col.type)}</span>
                 </span>
               ))}
             </div>

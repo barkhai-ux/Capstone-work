@@ -1,6 +1,7 @@
 import express, { Application } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import routes from './routes/index.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { config } from './config/index.js';
@@ -15,11 +16,45 @@ export const createApp = (): Application => {
   // CORS configuration
   app.use(
     cors({
-      origin: config.nodeEnv === 'development' ? '*' : process.env.FRONTEND_URL,
+      origin: config.nodeEnv === 'development'
+        ? ['http://localhost:5173', 'http://localhost:3001']
+        : process.env.FRONTEND_URL,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
       allowedHeaders: ['Content-Type', 'Authorization'],
     })
   );
+
+  // Rate limiting
+  const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'Too many requests, please try again later.' },
+  });
+
+  const uploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'Too many upload requests, please try again later.' },
+  });
+
+  const aiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'Too many AI requests, please try again later.' },
+  });
+
+  app.use('/api', generalLimiter);
+  app.use('/api/v1/upload', uploadLimiter);
+  app.use('/api/v1/chart', aiLimiter);
+  app.use('/api/v1/query', aiLimiter);
+  app.use('/api/v1/star-schema/analyze', aiLimiter);
+  app.use('/api/v1/normalization/analyze', aiLimiter);
 
   // Body parsing
   app.use(express.json({ limit: '10mb' }));
