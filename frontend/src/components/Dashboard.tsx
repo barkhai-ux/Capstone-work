@@ -4,7 +4,7 @@ import {
   PointElement, LineElement, Title, Tooltip, Legend, Filler,
   RadialLinearScale,
 } from 'chart.js';
-import { Bar, Pie, Doughnut, Line } from 'react-chartjs-2';
+import { Bar, Pie, Doughnut, Line, Scatter, Radar, PolarArea } from 'react-chartjs-2';
 import { GridLayout, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { api, TableInfo } from '../api';
@@ -110,7 +110,9 @@ interface ChartWidgetConfig {
   id: string;
   widgetType: 'chart';
   chartType: ChartType;
-  tableId: string;
+  tableIds: string[];
+  /** @deprecated kept for backward compat with old saved configs */
+  tableId?: string;
   labelColumn: string;
   valueColumn: string;
   aggregation: Aggregation;
@@ -118,6 +120,13 @@ interface ChartWidgetConfig {
   dateGrouping: DateGrouping;
   title: string;
   style: StyleConfig;
+}
+
+/** Resolve tableIds from config, handling legacy single tableId */
+function getTableIds(config: ChartWidgetConfig): string[] {
+  if (config.tableIds && config.tableIds.length > 0) return config.tableIds;
+  if (config.tableId) return [config.tableId];
+  return [];
 }
 
 interface TextWidgetConfig {
@@ -149,7 +158,6 @@ interface WidgetLayout {
 
 interface DashboardProps {
   tables: TableInfo[];
-  onSelectTable: (id: string) => void;
   onImport: () => void;
 }
 
@@ -315,20 +323,57 @@ function ColorInput({ label, value, onChange }: { label: string; value: string; 
 function ChartWidget({ config, tables, onEdit, onDelete }: {
   config: ChartWidgetConfig; tables: TableInfo[]; onEdit: () => void; onDelete: () => void;
 }) {
+  const draggedRef = useRef(false);
   const [data, setData] = useState<Record<string, unknown>[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [partialData, setPartialData] = useState(false);
+
+  const ids = getTableIds(config);
 
   useEffect(() => {
     setLoading(true);
-    api.getTableData(config.tableId, 1, 500).then((res) => {
-      if (res.success && res.data) setData(res.data.rows);
-      else setData([]);
-    }).finally(() => setLoading(false));
-  }, [config.tableId]);
+    setError(null);
+    setPartialData(false);
+
+    // Check for column type conflicts across selected tables
+    if (ids.length > 1) {
+      const colTypes = new Map<string, string>();
+      for (const id of ids) {
+        const t = tables.find((tb) => tb.id === id);
+        if (!t) continue;
+        for (const c of t.columns) {
+          const existing = colTypes.get(c.name);
+          if (existing && existing.toUpperCase() !== c.type.toUpperCase()) {
+            setError(`Column "${c.name}" has conflicting types across tables`);
+            setLoading(false);
+            return;
+          }
+          colTypes.set(c.name, c.type);
+        }
+      }
+    }
+
+    Promise.all(ids.map((id) => api.getTableData(id, 1, 500)))
+      .then((results) => {
+        const merged: Record<string, unknown>[] = [];
+        let capped = false;
+        for (const res of results) {
+          if (res.success && res.data) {
+            merged.push(...res.data.rows);
+            if (res.data.pagination && res.data.pagination.totalRows > 500) capped = true;
+          }
+        }
+        setPartialData(capped);
+        setData(merged);
+      })
+      .catch(() => setData([]))
+      .finally(() => setLoading(false));
+  }, [ids.join(',')]);
 
   const s = config.style ?? DEFAULT_STYLE;
 
-  const isLine = config.chartType === 'line' || config.chartType === 'area';
+  const isLineOrArea = config.chartType === 'line' || config.chartType === 'area';
 
   const chartData = (() => {
     if (!data || data.length === 0) return null;
@@ -378,17 +423,17 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       datasets: [{
         label: `${config.aggregation.charAt(0).toUpperCase() + config.aggregation.slice(1)} of ${config.valueColumn}`,
         data: entries.map(([, v]) => Math.round(v * 100) / 100),
-        backgroundColor: isLine ? `${s.lineColor}18` : config.chartType === 'radar' ? `${colors[0]}33` : colors.slice(0, entries.length),
-        borderColor: isLine ? s.lineColor : config.chartType === 'radar' ? colors[0] : config.chartType === 'bar' ? colors.slice(0, entries.length).map(c => c + 'cc') : colors.slice(0, entries.length),
-        fill: isLine || config.chartType === 'radar',
-        borderWidth: isLine ? 2.5 : config.chartType === 'radar' ? 2 : (config.chartType === 'bar' ? 0 : 2),
-        pointBackgroundColor: isLine || config.chartType === 'radar' ? s.lineColor : undefined,
+        backgroundColor: isLineOrArea ? `${s.lineColor}18` : config.chartType === 'radar' ? `${colors[0]}33` : colors.slice(0, entries.length),
+        borderColor: isLineOrArea ? s.lineColor : config.chartType === 'radar' ? colors[0] : config.chartType === 'bar' ? colors.slice(0, entries.length).map(c => c + 'cc') : colors.slice(0, entries.length),
+        fill: isLineOrArea || config.chartType === 'radar',
+        borderWidth: isLineOrArea ? 2.5 : config.chartType === 'radar' ? 2 : (config.chartType === 'bar' ? 0 : 2),
+        pointBackgroundColor: isLineOrArea || config.chartType === 'radar' ? s.lineColor : undefined,
         pointRadius: config.chartType === 'radar' ? 3 : undefined,
       }],
     };
   })() as any;
 
-  const tableName = tables.find((t) => t.id === config.tableId)?.name ?? '';
+  const tableName = ids.map((id) => tables.find((t) => t.id === id)?.name).filter(Boolean).join(', ') || '';
 
   const axisOpts = {
     responsive: true, maintainAspectRatio: false,
@@ -437,22 +482,37 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       arc: { borderWidth: 2, borderColor: s.bgColor },
     },
   };
+  const radarOpts = {
+    responsive: true, maintainAspectRatio: false,
+    animation: { duration: 600, easing: 'easeOutQuart' as const },
+    plugins: {
+      legend: { display: s.showLegend, position: s.legendPosition, labels: { font: { size: 10 }, usePointStyle: true, pointStyle: 'circle' } },
+      tooltip: { backgroundColor: '#1f2937', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 10, cornerRadius: 8, displayColors: true, boxPadding: 4 },
+    },
+    scales: {
+      r: {
+        grid: { color: s.gridColor },
+        pointLabels: { font: { size: s.axisLabelSize }, color: s.axisLabelColor },
+        ticks: { font: { size: s.axisLabelSize - 1 }, color: s.axisLabelColor, backdropColor: 'transparent' },
+      },
+    },
+  };
 
   return (
     <div
-      className="h-full flex flex-col overflow-hidden group shadow-sm hover:shadow-md transition-shadow"
+      className="h-full flex flex-col overflow-hidden group shadow-sm hover:shadow-md transition-shadow cursor-pointer"
       style={{ background: s.bgColor, border: `1px solid ${s.borderColor}`, borderRadius: s.borderRadius }}
+      onMouseDown={() => { draggedRef.current = false; }}
+      onMouseMove={() => { draggedRef.current = true; }}
+      onClick={() => { if (!draggedRef.current) onEdit(); }}
     >
       <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0 drag-handle cursor-grab active:cursor-grabbing">
         <div className="min-w-0">
           <h3 className="font-semibold truncate leading-tight" style={{ fontSize: s.titleSize, color: s.titleColor }}>{config.title}</h3>
-          <p className="text-[10px] text-gray-400 truncate mt-0.5">{tableName} &middot; {config.aggregation}</p>
+          <p className="text-[10px] text-gray-400 truncate mt-0.5">{tableName} &middot; {config.aggregation}{partialData ? ' (first 500 rows)' : ''}</p>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button onMouseDown={(e) => e.stopPropagation()} onClick={onEdit} className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors">
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" /></svg>
-          </button>
-          <button onMouseDown={(e) => e.stopPropagation()} onClick={onDelete} className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+          <button onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onDelete(); }} aria-label="Delete widget" className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
@@ -460,12 +520,20 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       <div className="flex-1 px-3 pb-3 pt-1 min-h-0">
         {loading ? (
           <div className="h-full flex items-center justify-center"><div className="w-5 h-5 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin" /></div>
+        ) : error ? (
+          <div className="h-full flex items-center justify-center text-xs text-red-500 px-2 text-center">{error}</div>
         ) : !chartData ? (
           <div className="h-full flex items-center justify-center text-xs text-gray-400">No data</div>
         ) : config.chartType === 'bar' ? (
           <Bar data={chartData} options={axisOpts} />
-        ) : config.chartType === 'line' ? (
+        ) : config.chartType === 'line' || config.chartType === 'area' ? (
           <Line data={chartData} options={axisOpts} />
+        ) : config.chartType === 'scatter' ? (
+          <Scatter data={chartData} options={axisOpts} />
+        ) : config.chartType === 'radar' ? (
+          <Radar data={chartData} options={radarOpts} />
+        ) : config.chartType === 'polarArea' ? (
+          <PolarArea data={chartData} options={circOpts} />
         ) : config.chartType === 'pie' ? (
           <Pie data={chartData} options={circOpts} />
         ) : (
@@ -478,18 +546,20 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
 
 // ── Text Widget ──
 
-function TextWidget({ config, onDelete, onUpdate }: {
-  config: TextWidgetConfig; onDelete: () => void; onUpdate: (cfg: TextWidgetConfig) => void;
+function TextWidget({ config, onEdit, onDelete, onUpdate }: {
+  config: TextWidgetConfig; onEdit: () => void; onDelete: () => void; onUpdate: (cfg: TextWidgetConfig) => void;
 }) {
   const s = config.style ?? DEFAULT_STYLE;
   return (
-    <div className="h-full flex flex-col overflow-hidden group" style={{ background: s.bgColor, borderRadius: s.borderRadius }}>
-      {/* Invisible drag handle at the top */}
-      <div className="drag-handle cursor-grab active:cursor-grabbing h-3 flex-shrink-0 flex justify-end items-start pt-1 pr-1">
-        <button onMouseDown={(e) => e.stopPropagation()} onClick={onDelete}
-          className="w-5 h-5 flex items-center justify-center rounded text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-        </button>
+    <div className="h-full flex flex-col overflow-hidden group shadow-sm hover:shadow-md transition-shadow" style={{ background: s.bgColor, border: `1px solid ${s.borderColor}`, borderRadius: s.borderRadius }}>
+      <div className="flex items-center justify-between px-3 py-2 flex-shrink-0 drag-handle cursor-grab active:cursor-grabbing">
+        <h3 className="font-semibold truncate leading-tight cursor-pointer hover:text-blue-600 transition-colors" style={{ fontSize: s.titleSize, color: s.titleColor }} onMouseDown={(e) => e.stopPropagation()} onClick={onEdit}>{config.title || 'Text'}</h3>
+        <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onMouseDown={(e) => e.stopPropagation()} onClick={onDelete} aria-label="Delete widget"
+            className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
       </div>
       <textarea
         value={config.content}
@@ -504,12 +574,13 @@ function TextWidget({ config, onDelete, onUpdate }: {
 
 // ── Table Widget ──
 
-function DataTableWidget({ config, onDelete, onUpdate }: {
-  config: TableWidgetConfig; onDelete: () => void; onUpdate: (cfg: TableWidgetConfig) => void;
+function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
+  config: TableWidgetConfig; onEdit: () => void; onDelete: () => void; onUpdate: (cfg: TableWidgetConfig) => void;
 }) {
   const [data, setData] = useState<Record<string, unknown>[] | null>(null);
   const [loading, setLoading] = useState(true);
   const s = config.style ?? DEFAULT_STYLE;
+  const draggedRef = useRef(false);
 
   useEffect(() => {
     if (!config.tableId || config.columns.length === 0) { setData(null); setLoading(false); return; }
@@ -540,9 +611,12 @@ function DataTableWidget({ config, onDelete, onUpdate }: {
   };
 
   return (
-    <div className="h-full flex flex-col overflow-hidden group shadow-sm hover:shadow-md transition-shadow"
+    <div className="h-full flex flex-col overflow-hidden group shadow-sm hover:shadow-md transition-shadow cursor-pointer"
       style={{ background: s.bgColor, border: `1px solid ${s.borderColor}`, borderRadius: s.borderRadius }}
-      onDrop={handleDrop} onDragOver={handleDragOver}>
+      onDrop={handleDrop} onDragOver={handleDragOver}
+      onMouseDown={() => { draggedRef.current = false; }}
+      onMouseMove={() => { draggedRef.current = true; }}
+      onClick={() => { if (!draggedRef.current) onEdit(); }}>
       <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0 drag-handle cursor-grab active:cursor-grabbing">
         <div className="min-w-0">
           <h3 className="font-semibold truncate leading-tight" style={{ fontSize: s.titleSize, color: s.titleColor }}>{config.title || 'Table'}</h3>
@@ -550,10 +624,12 @@ function DataTableWidget({ config, onDelete, onUpdate }: {
             <p className="text-[10px] text-gray-400 truncate mt-0.5">{data?.length ?? 0} rows</p>
           )}
         </div>
-        <button onMouseDown={(e) => e.stopPropagation()} onClick={onDelete}
-          className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-        </button>
+        <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onDelete(); }} aria-label="Delete widget"
+            className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
       </div>
       {config.columns.length === 0 ? (
         <div className="flex-1 flex items-center justify-center border-2 border-dashed border-gray-200 m-3 rounded-lg">
@@ -828,19 +904,22 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
   const [aiError, setAiError] = useState('');
   const [aiMode, setAiMode] = useState<'chart' | 'dashboard'>('chart');
 
-  const parseChartWidget = (d: Record<string, unknown>): ChartWidgetConfig => ({
-    id: crypto.randomUUID(),
-    widgetType: 'chart',
-    chartType: (d.chartType as ChartType) ?? 'bar',
-    tableId: (d.tableId as string) ?? tables[0]?.id ?? '',
-    labelColumn: (d.labelColumn as string) ?? '',
-    valueColumn: (d.valueColumn as string) ?? '',
-    aggregation: (d.aggregation as Aggregation) ?? 'sum',
-    topN: typeof d.topN === 'number' ? d.topN : 0,
-    dateGrouping: (d.dateGrouping as DateGrouping) ?? 'none',
-    title: (d.title as string) ?? '',
-    style: { ...DEFAULT_STYLE, ...((d.style as Partial<StyleConfig>) ?? {}) },
-  });
+  const parseChartWidget = (d: Record<string, unknown>): ChartWidgetConfig => {
+    const ids = Array.isArray(d.tableIds) ? (d.tableIds as string[]) : d.tableId ? [d.tableId as string] : [tables[0]?.id ?? ''];
+    return {
+      id: crypto.randomUUID(),
+      widgetType: 'chart',
+      chartType: (d.chartType as ChartType) ?? 'bar',
+      tableIds: ids,
+      labelColumn: (d.labelColumn as string) ?? '',
+      valueColumn: (d.valueColumn as string) ?? '',
+      aggregation: (d.aggregation as Aggregation) ?? 'sum',
+      topN: typeof d.topN === 'number' ? d.topN : 0,
+      dateGrouping: (d.dateGrouping as DateGrouping) ?? 'none',
+      title: (d.title as string) ?? '',
+      style: { ...DEFAULT_STYLE, ...((d.style as Partial<StyleConfig>) ?? {}) },
+    };
+  };
 
   const parseTextWidget = (d: Record<string, unknown>): TextWidgetConfig => ({
     id: crypto.randomUUID(),
@@ -883,10 +962,17 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
     }
   };
 
+  // Prefer original_ tables for charting, fall back to first table
+  const defaultTableId = useMemo(() => {
+    if (tables.length === 0) return '';
+    const orig = tables.find((t) => t.name.startsWith('original_'));
+    return orig?.id ?? tables[0].id;
+  }, [tables]);
+
   // Chart state
   const [chartType, setChartType] = useState<ChartType>(editing?.widgetType === 'chart' ? editing.chartType : 'bar');
-  const [tableId, setTableId] = useState(
-    editing?.widgetType === 'chart' ? editing.tableId : editing?.widgetType === 'table' ? editing.tableId : (tables[0]?.id ?? '')
+  const [tableIds, setTableIds] = useState<string[]>(
+    editing?.widgetType === 'chart' ? getTableIds(editing) : editing?.widgetType === 'table' ? [editing.tableId] : (defaultTableId ? [defaultTableId] : [])
   );
   const [labelColumn, setLabelColumn] = useState(editing?.widgetType === 'chart' ? editing.labelColumn : '');
   const [valueColumn, setValueColumn] = useState(editing?.widgetType === 'chart' ? editing.valueColumn : '');
@@ -910,7 +996,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       setTitle(editing.title);
       setStyle(editing.style ?? { ...DEFAULT_STYLE });
       if (editing.widgetType === 'chart') {
-        setChartType(editing.chartType); setTableId(editing.tableId);
+        setChartType(editing.chartType); setTableIds(getTableIds(editing));
         setLabelColumn(editing.labelColumn); setValueColumn(editing.valueColumn);
         setAggregation(editing.aggregation);
         setTopN(editing.topN ?? 0);
@@ -918,14 +1004,34 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       } else if (editing.widgetType === 'text') {
         setTextContent(editing.content);
       } else if (editing.widgetType === 'table') {
-        setTableId(editing.tableId);
+        setTableIds(editing.tableId ? [editing.tableId] : []);
         setMaxRows(editing.maxRows);
       }
     }
   }, [editing]);
 
-  const selectedTable = tables.find((t) => t.id === tableId);
-  const columns = selectedTable?.columns ?? [];
+  const selectedTables = tables.filter((t) => tableIds.includes(t.id));
+
+  // Merge columns from all selected tables, detect type conflicts
+  const { columns, conflicts } = useMemo(() => {
+    const colMap = new Map<string, { type: string; tables: string[] }>();
+    const conflictList: string[] = [];
+    for (const t of selectedTables) {
+      for (const c of t.columns) {
+        const existing = colMap.get(c.name);
+        if (existing) {
+          existing.tables.push(t.name);
+          if (existing.type.toUpperCase() !== c.type.toUpperCase() && !conflictList.includes(c.name)) {
+            conflictList.push(c.name);
+          }
+        } else {
+          colMap.set(c.name, { type: c.type, tables: [t.name] });
+        }
+      }
+    }
+    const cols = Array.from(colMap.entries()).map(([name, { type }]) => ({ name, type, nullable: true }));
+    return { columns: cols, conflicts: conflictList };
+  }, [selectedTables]);
 
   useEffect(() => {
     if (!editing && columns.length > 0 && widgetType === 'chart') {
@@ -934,7 +1040,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       setLabelColumn(cat?.name ?? columns[0].name);
       setValueColumn(num?.name ?? columns[0].name);
     }
-  }, [tableId]);
+  }, [tableIds.join(',')]);
 
   const updateStyle = (patch: Partial<StyleConfig>) => setStyle((s) => ({ ...s, ...patch }));
 
@@ -942,7 +1048,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
     ? true
     : widgetType === 'table'
     ? true
-    : !!(tableId && labelColumn && valueColumn);
+    : !!(tableIds.length > 0 && labelColumn && valueColumn && conflicts.length === 0);
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -950,7 +1056,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       const cfg: ChartWidgetConfig = {
         id: editing?.id ?? crypto.randomUUID(),
         widgetType: 'chart',
-        chartType, tableId, labelColumn, valueColumn, aggregation, topN, dateGrouping,
+        chartType, tableIds, labelColumn, valueColumn, aggregation, topN, dateGrouping,
         title: title || `${valueColumn} by ${labelColumn}`,
         style,
       };
@@ -979,140 +1085,177 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
     if (!editing) { setTitle(''); setTextContent(''); }
   };
 
-  const isAxisChart = chartType === 'bar' || chartType === 'line';
+  const isAxisChart = chartType === 'bar' || chartType === 'line' || chartType === 'area' || chartType === 'scatter';
 
+
+  const activeTableName = selectedTables[0]?.name ?? '';
+  const numericCols = columns.filter((c) => ['INTEGER', 'DECIMAL', 'BIGINT', 'DOUBLE', 'FLOAT'].includes(c.type.toUpperCase()));
+  const categoryCols = columns.filter((c) => !['INTEGER', 'DECIMAL', 'BIGINT', 'DOUBLE', 'FLOAT'].includes(c.type.toUpperCase()));
 
   return (
-    <div className="w-[270px] flex-shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
-      <div className="px-4 py-3 border-b border-gray-200 flex-shrink-0">
-        <h2 className="text-[13px] font-semibold text-gray-800 mb-2">{editing ? 'Edit Widget' : 'Widget Builder'}</h2>
-        {!editing && (
-          <div className="flex gap-1">
-            {([
-              { type: 'chart' as WidgetType, label: 'Chart', icon: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75z' },
-              { type: 'text' as WidgetType, label: 'Text', icon: 'M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12' },
-              { type: 'table' as WidgetType, label: 'Table', icon: 'M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375' },
-            ]).map(({ type, label, icon }) => (
-              <button key={type} onClick={() => setWidgetType(type)}
-                className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-[11px] font-medium transition-all ${
-                  widgetType === type ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                }`}>
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d={icon} /></svg>
-                {label}
-              </button>
-            ))}
+    <div className="w-[280px] flex-shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
+      {/* ── Header ── */}
+      <div className="px-4 pt-4 pb-3 flex-shrink-0">
+        {editing ? (
+          <div className="flex items-center gap-2 mb-3">
+            <button onClick={onCancelEdit} className="w-7 h-7 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 transition-colors">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
+            </button>
+            <h2 className="text-[14px] font-bold text-gray-800">Edit Widget</h2>
           </div>
+        ) : (
+          <>
+            <h2 className="text-[14px] font-bold text-gray-800 mb-3">Add Widget</h2>
+            <div className="flex gap-1.5">
+              {([
+                { type: 'chart' as WidgetType, label: 'Chart', icon: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75z' },
+                { type: 'text' as WidgetType, label: 'Text', icon: 'M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12' },
+                { type: 'table' as WidgetType, label: 'Table', icon: 'M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375' },
+              ]).map(({ type, label, icon }) => (
+                <button key={type} onClick={() => setWidgetType(type)}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-semibold transition-all ${
+                    widgetType === type ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border border-gray-200'
+                  }`}>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d={icon} /></svg>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
-      {/* AI Generation */}
+      {/* ── AI Generation (compact) ── */}
       {!editing && (
-        <div className="px-4 py-3 border-b border-gray-200 flex-shrink-0">
+        <div className="mx-4 mb-3 p-2.5 rounded-xl bg-gradient-to-br from-purple-50 to-indigo-50 border border-purple-100 flex-shrink-0">
           <div className="flex items-center gap-1.5 mb-2">
             <svg className="w-3.5 h-3.5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
             </svg>
-            <span className="text-[11px] font-semibold text-purple-600 uppercase tracking-wider">AI Generate</span>
+            <span className="text-[11px] font-semibold text-purple-700">AI Generate</span>
+            <div className="ml-auto flex gap-1">
+              <button onClick={() => setAiMode('chart')}
+                className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all ${
+                  aiMode === 'chart' ? 'bg-purple-600 text-white' : 'text-purple-400 hover:text-purple-600'}`}>
+                Chart
+              </button>
+              <button onClick={() => setAiMode('dashboard')}
+                className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all ${
+                  aiMode === 'dashboard' ? 'bg-purple-600 text-white' : 'text-purple-400 hover:text-purple-600'}`}>
+                Dashboard
+              </button>
+            </div>
           </div>
-          <div className="flex gap-1 mb-2">
-            <button onClick={() => setAiMode('chart')}
-              className={`flex-1 py-1 rounded text-[10px] font-medium transition-all ${
-                aiMode === 'chart' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-              Single Chart
-            </button>
-            <button onClick={() => setAiMode('dashboard')}
-              className={`flex-1 py-1 rounded text-[10px] font-medium transition-all ${
-                aiMode === 'dashboard' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-              Full Dashboard
+          <div className="flex gap-1.5">
+            <input
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAiGenerate(); } }}
+              placeholder={aiMode === 'dashboard' ? 'Describe your dashboard...' : 'Describe your chart...'}
+              disabled={aiLoading}
+              className="flex-1 min-w-0 border border-purple-200 rounded-lg px-2.5 py-1.5 text-[11px] text-gray-700 bg-white focus:outline-none focus:ring-1 focus:ring-purple-400 placeholder:text-gray-300 disabled:opacity-50"
+            />
+            <button
+              onClick={handleAiGenerate}
+              disabled={!aiPrompt.trim() || aiLoading}
+              className="w-8 h-8 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white flex items-center justify-center transition-colors flex-shrink-0"
+            >
+              {aiLoading ? (
+                <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
+              )}
             </button>
           </div>
-          <textarea
-            value={aiPrompt}
-            onChange={(e) => setAiPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAiGenerate(); } }}
-            placeholder={aiMode === 'dashboard'
-              ? 'e.g. Create a sales performance dashboard with dark blue theme'
-              : 'e.g. Red bar chart showing top 10 customers by revenue'}
-            rows={2}
-            disabled={aiLoading}
-            className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-purple-400 focus:border-purple-400 resize-none placeholder:text-gray-300 disabled:opacity-50"
-          />
-          {aiError && <p className="text-[10px] text-red-500 mt-1">{aiError}</p>}
-          <button
-            onClick={handleAiGenerate}
-            disabled={!aiPrompt.trim() || aiLoading}
-            className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:text-gray-400 transition-colors"
-          >
-            {aiLoading ? (
-              <><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Generating...</>
-            ) : (
-              <><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg> {aiMode === 'dashboard' ? 'Generate Dashboard' : 'Generate Chart'}</>
-            )}
-          </button>
+          {aiError && <p className="text-[10px] text-red-500 mt-1.5">{aiError}</p>}
         </div>
       )}
 
+      {/* ── Scrollable Body ── */}
       <div className="flex-1 overflow-y-auto">
         {/* ── Chart Builder ── */}
         {widgetType === 'chart' && (
           <>
-            <Section title="Data">
-              <div>
-                <label className="block text-[11px] text-gray-500 mb-1">Chart Type</label>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {CHART_TYPES.map((ct) => (
-                    <button key={ct.value} onClick={() => setChartType(ct.value)}
-                      className={`flex flex-col items-center gap-0.5 py-1.5 rounded-lg border text-[10px] transition-all ${
-                        chartType === ct.value ? 'border-blue-400 bg-blue-50 text-blue-700 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
-                      }`}>
-                      {CHART_ICON_MAP[ct.value](chartType === ct.value)}
-                      {ct.label}
-                    </button>
+            {/* Table selector — single dropdown, auto-selects original */}
+            <div className="px-4 pb-3">
+              <div className="flex items-center gap-2 mb-2.5">
+                <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375" /></svg>
+                <select value={tableIds[0] ?? ''} onChange={(e) => { setTableIds([e.target.value]); setLabelColumn(''); setValueColumn(''); }}
+                  className="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-[12px] text-gray-700 font-medium focus:outline-none focus:ring-1 focus:ring-blue-400 truncate">
+                  {[...tables].sort((a, b) => {
+                    const aOrig = a.name.startsWith('original_') ? 0 : 1;
+                    const bOrig = b.name.startsWith('original_') ? 0 : 1;
+                    return aOrig - bOrig || a.name.localeCompare(b.name);
+                  }).map((t) => (
+                    <option key={t.id} value={t.id}>{t.name.startsWith('original_') ? `${t.name.slice(9)} (original)` : t.name}</option>
                   ))}
+                </select>
+              </div>
+              {activeTableName && (
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
+                  <span>{columns.length} columns</span>
+                  <span>&middot;</span>
+                  <span>{numericCols.length} numeric</span>
+                  <span>&middot;</span>
+                  <span>{categoryCols.length} category</span>
+                </div>
+              )}
+            </div>
+
+            {/* Chart type grid */}
+            <div className="px-4 pb-3">
+              <div className="grid grid-cols-4 gap-1.5">
+                {CHART_TYPES.map((ct) => (
+                  <button key={ct.value} onClick={() => setChartType(ct.value)}
+                    className={`flex flex-col items-center gap-0.5 py-2 rounded-lg border text-[10px] transition-all ${
+                      chartType === ct.value ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold shadow-sm' : 'border-gray-100 text-gray-400 hover:bg-gray-50 hover:border-gray-200'
+                    }`}>
+                    {CHART_ICON_MAP[ct.value](chartType === ct.value)}
+                    {ct.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Mapping */}
+            <Section title="Mapping">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-gray-400 mb-1 uppercase tracking-wider font-semibold">{isAxisChart ? 'X-Axis' : 'Category'}</label>
+                  <select value={labelColumn} onChange={(e) => setLabelColumn(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-[11px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400">
+                    <option value="">Select...</option>
+                    {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-400 mb-1 uppercase tracking-wider font-semibold">{isAxisChart ? 'Y-Axis' : 'Value'}</label>
+                  <select value={valueColumn} onChange={(e) => setValueColumn(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-[11px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400">
+                    <option value="">Select...</option>
+                    {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                  </select>
                 </div>
               </div>
               <div>
-                <label className="block text-[11px] text-gray-500 mb-1">Data Source</label>
-                <select value={tableId} onChange={(e) => { setTableId(e.target.value); setLabelColumn(''); setValueColumn(''); }}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400">
-                  {tables.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-500 mb-1">{isAxisChart ? 'X-Axis' : 'Category'}</label>
-                <select value={labelColumn} onChange={(e) => setLabelColumn(e.target.value)}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400">
-                  <option value="">Select...</option>
-                  {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-500 mb-1">{isAxisChart ? 'Y-Axis' : 'Value'}</label>
-                <select value={valueColumn} onChange={(e) => setValueColumn(e.target.value)}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400">
-                  <option value="">Select...</option>
-                  {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-500 mb-1">Aggregation</label>
+                <label className="block text-[10px] text-gray-400 mb-1 uppercase tracking-wider font-semibold">Aggregation</label>
                 <div className="flex gap-1">
                   {AGGREGATIONS.map((a) => (
                     <button key={a.value} onClick={() => setAggregation(a.value)}
-                      className={`flex-1 py-1 rounded text-[10px] font-medium transition-all ${
-                        aggregation === a.value ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-semibold transition-all ${
+                        aggregation === a.value ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border border-gray-200'}`}>
                       {a.label}
                     </button>
                   ))}
                 </div>
               </div>
               <div>
-                <label className="block text-[11px] text-gray-500 mb-1">Show</label>
+                <label className="block text-[10px] text-gray-400 mb-1 uppercase tracking-wider font-semibold">Limit</label>
                 <div className="flex gap-1">
                   {TOP_N_OPTIONS.map((opt) => (
                     <button key={opt.value} onClick={() => setTopN(opt.value)}
-                      className={`flex-1 py-1 rounded text-[10px] font-medium transition-all ${
-                        topN === opt.value ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-semibold transition-all ${
+                        topN === opt.value ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border border-gray-200'}`}>
                       {opt.label}
                     </button>
                   ))}
@@ -1123,12 +1266,12 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
                 const isDate = selCol && ['DATE', 'TIMESTAMP'].includes(selCol.type.toUpperCase());
                 return isDate ? (
                   <div>
-                    <label className="block text-[11px] text-gray-500 mb-1">Date Grouping</label>
+                    <label className="block text-[10px] text-gray-400 mb-1 uppercase tracking-wider font-semibold">Date Grouping</label>
                     <div className="flex gap-1">
                       {DATE_GROUPINGS.map((dg) => (
                         <button key={dg.value} onClick={() => setDateGrouping(dg.value)}
-                          className={`flex-1 py-1 rounded text-[10px] font-medium transition-all ${
-                            dateGrouping === dg.value ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                          className={`flex-1 py-1.5 rounded-lg text-[10px] font-semibold transition-all ${
+                            dateGrouping === dg.value ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border border-gray-200'}`}>
                           {dg.label}
                         </button>
                       ))}
@@ -1138,16 +1281,17 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
               })()}
             </Section>
 
-            <Section title="Colors">
+            {/* Style */}
+            <Section title="Style" defaultOpen={false}>
               <div>
-                <span className="block text-[11px] text-gray-500 mb-1.5">Theme</span>
+                <span className="block text-[10px] text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Color Theme</span>
                 <div className="grid grid-cols-3 gap-1.5">
                   {COLOR_THEMES.map((theme) => (
                     <button key={theme.name}
                       onClick={() => updateStyle({ chartColors: [...theme.colors], chartColor: theme.colors[0], lineColor: theme.colors[0] })}
-                      className={`flex flex-col items-center gap-1 px-1.5 py-1.5 rounded border text-[10px] transition-all hover:border-blue-400 ${
+                      className={`flex flex-col items-center gap-1 px-1.5 py-1.5 rounded-lg border text-[9px] transition-all hover:border-blue-400 ${
                         style.chartColors[0] === theme.colors[0] && style.chartColors[1] === theme.colors[1]
-                          ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                          ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold' : 'border-gray-100 text-gray-400 hover:bg-gray-50'
                       }`}>
                       <div className="flex gap-px">
                         {theme.colors.slice(0, 5).map((c, i) => (
@@ -1163,7 +1307,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
                 <ColorInput label="Line Color" value={style.lineColor} onChange={(v) => updateStyle({ lineColor: v })} />
               ) : (
                 <div>
-                  <span className="block text-[11px] text-gray-500 mb-1.5">Chart Colors</span>
+                  <span className="block text-[10px] text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Custom Colors</span>
                   <div className="flex flex-wrap gap-1">
                     {style.chartColors.slice(0, 10).map((c, i) => (
                       <input key={i} type="color" value={c}
@@ -1173,31 +1317,6 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
                   </div>
                 </div>
               )}
-            </Section>
-
-            {isAxisChart && (
-              <Section title="Axis Labels" defaultOpen={false}>
-                <div>
-                  <label className="block text-[11px] text-gray-500 mb-1">X-Axis Label</label>
-                  <input value={style.xAxisLabel} onChange={(e) => updateStyle({ xAxisLabel: e.target.value })}
-                    placeholder="e.g. Category" className="w-full border border-gray-200 rounded px-2 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-gray-500 mb-1">Y-Axis Label</label>
-                  <input value={style.yAxisLabel} onChange={(e) => updateStyle({ yAxisLabel: e.target.value })}
-                    placeholder="e.g. Revenue ($)" className="w-full border border-gray-200 rounded px-2 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-                </div>
-                <ColorInput label="Axis Text Color" value={style.axisLabelColor} onChange={(v) => updateStyle({ axisLabelColor: v })} />
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-gray-500">Axis Font Size</span>
-                  <input type="number" min={8} max={18} value={style.axisLabelSize} onChange={(e) => updateStyle({ axisLabelSize: Number(e.target.value) })}
-                    className="w-14 border border-gray-200 rounded px-1.5 py-0.5 text-[10px] text-gray-600 text-center" />
-                </div>
-                <ColorInput label="Grid Color" value={style.gridColor} onChange={(v) => updateStyle({ gridColor: v })} />
-              </Section>
-            )}
-
-            <Section title="Legend" defaultOpen={false}>
               <div className="flex items-center justify-between">
                 <span className="text-[11px] text-gray-500">Show Legend</span>
                 <button onClick={() => updateStyle({ showLegend: !style.showLegend })}
@@ -1206,18 +1325,32 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
                 </button>
               </div>
               {style.showLegend && (
-                <div>
-                  <label className="block text-[11px] text-gray-500 mb-1">Position</label>
-                  <div className="flex gap-1">
-                    {(['top', 'bottom', 'left', 'right'] as const).map((p) => (
-                      <button key={p} onClick={() => updateStyle({ legendPosition: p })}
-                        className={`flex-1 py-1 rounded text-[10px] font-medium capitalize transition-all ${
-                          style.legendPosition === p ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                        {p}
-                      </button>
-                    ))}
-                  </div>
+                <div className="flex gap-1">
+                  {(['top', 'bottom', 'left', 'right'] as const).map((p) => (
+                    <button key={p} onClick={() => updateStyle({ legendPosition: p })}
+                      className={`flex-1 py-1 rounded-lg text-[10px] font-semibold capitalize transition-all ${
+                        style.legendPosition === p ? 'bg-blue-600 text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border border-gray-200'}`}>
+                      {p}
+                    </button>
+                  ))}
                 </div>
+              )}
+              {isAxisChart && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">X Label</label>
+                      <input value={style.xAxisLabel} onChange={(e) => updateStyle({ xAxisLabel: e.target.value })}
+                        placeholder="e.g. Category" className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-[11px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">Y Label</label>
+                      <input value={style.yAxisLabel} onChange={(e) => updateStyle({ yAxisLabel: e.target.value })}
+                        placeholder="e.g. Revenue" className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-[11px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                    </div>
+                  </div>
+                  <ColorInput label="Grid Color" value={style.gridColor} onChange={(v) => updateStyle({ gridColor: v })} />
+                </>
               )}
             </Section>
           </>
@@ -1225,83 +1358,66 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
 
         {/* ── Text Builder ── */}
         {widgetType === 'text' && (
-          <>
-            <Section title="Content">
-              <div>
-                <label className="block text-[11px] text-gray-500 mb-1">Text Content</label>
-                <textarea value={textContent} onChange={(e) => setTextContent(e.target.value)}
-                  placeholder="Type your conclusion, notes, or analysis..."
-                  rows={8}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-none" />
-              </div>
-            </Section>
-          </>
+          <div className="px-4 pb-3">
+            <textarea value={textContent} onChange={(e) => setTextContent(e.target.value)}
+              placeholder="Type your notes, insights, or analysis..."
+              rows={10}
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-none leading-relaxed" />
+          </div>
         )}
 
         {/* ── Table Builder ── */}
         {widgetType === 'table' && (
-          <>
-            <Section title="Instructions">
-              <div className="flex items-start gap-2 p-2 bg-blue-50 rounded-lg">
-                <svg className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
-                </svg>
-                <p className="text-[11px] text-blue-700 leading-relaxed">
-                  Add a blank table to the dashboard, then expand a table in the sidebar and <strong>drag columns</strong> onto it.
-                </p>
-              </div>
-            </Section>
-            <Section title="Settings">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] text-gray-500">Max Rows</span>
-                <input type="number" min={5} max={500} value={maxRows} onChange={(e) => setMaxRows(Number(e.target.value))}
-                  className="w-16 border border-gray-200 rounded px-1.5 py-0.5 text-[10px] text-gray-600 text-center" />
-              </div>
-            </Section>
-          </>
+          <div className="px-4 pb-3 space-y-3">
+            <div className="flex items-start gap-2 p-2.5 bg-blue-50 rounded-xl">
+              <svg className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+              </svg>
+              <p className="text-[11px] text-blue-700 leading-relaxed">
+                Add this widget, then <strong>drag columns</strong> from the sidebar onto it.
+              </p>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-gray-500">Max Rows</span>
+              <input type="number" min={5} max={500} value={maxRows} onChange={(e) => setMaxRows(Number(e.target.value))}
+                className="w-16 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-1 text-[11px] text-gray-600 text-center focus:outline-none focus:ring-1 focus:ring-blue-400" />
+            </div>
+          </div>
         )}
 
-        {/* Common style sections */}
-        <Section title="Header">
-          <div>
-            <label className="block text-[11px] text-gray-500 mb-1">Title</label>
-            <input value={title} onChange={(e) => setTitle(e.target.value)}
-              placeholder={widgetType === 'chart' && valueColumn && labelColumn ? `${valueColumn} by ${labelColumn}` : widgetType === 'text' ? 'Text' : selectedTable?.name ?? 'Title...'}
-              className="w-full border border-gray-200 rounded px-2 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-          </div>
-          <ColorInput label="Title Color" value={style.titleColor} onChange={(v) => updateStyle({ titleColor: v })} />
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] text-gray-500">Title Size</span>
-            <input type="number" min={9} max={24} value={style.titleSize} onChange={(e) => updateStyle({ titleSize: Number(e.target.value) })}
-              className="w-14 border border-gray-200 rounded px-1.5 py-0.5 text-[10px] text-gray-600 text-center" />
-          </div>
+        {/* Common: Title */}
+        <Section title="Title">
+          <input value={title} onChange={(e) => setTitle(e.target.value)}
+            placeholder={widgetType === 'chart' && valueColumn && labelColumn ? `${valueColumn} by ${labelColumn}` : widgetType === 'text' ? 'Text' : selectedTables[0]?.name ?? 'Title...'}
+            className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400" />
         </Section>
 
+        {/* Common: Appearance */}
         <Section title="Appearance" defaultOpen={false}>
           <ColorInput label="Background" value={style.bgColor} onChange={(v) => updateStyle({ bgColor: v })} />
           <ColorInput label="Border" value={style.borderColor} onChange={(v) => updateStyle({ borderColor: v })} />
+          <ColorInput label="Title Color" value={style.titleColor} onChange={(v) => updateStyle({ titleColor: v })} />
           {widgetType === 'text' && (
             <ColorInput label="Text Color" value={style.axisLabelColor} onChange={(v) => updateStyle({ axisLabelColor: v })} />
           )}
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-gray-500">Border Radius</span>
+            <span className="text-[11px] text-gray-500">Corner Radius</span>
             <input type="number" min={0} max={24} value={style.borderRadius} onChange={(e) => updateStyle({ borderRadius: Number(e.target.value) })}
-              className="w-14 border border-gray-200 rounded px-1.5 py-0.5 text-[10px] text-gray-600 text-center" />
+              className="w-14 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 text-[10px] text-gray-600 text-center" />
           </div>
         </Section>
       </div>
 
-      {/* Actions */}
-      <div className="px-4 py-3 border-t border-gray-200 space-y-2 flex-shrink-0">
+      {/* ── Action Button ── */}
+      <div className="px-4 py-3 border-t border-gray-100 flex-shrink-0">
         <button onClick={handleSubmit} disabled={!canSubmit}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-400 transition-colors">
-          {editing ? 'Update Widget' : 'Add to Dashboard'}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:text-gray-400 transition-colors shadow-sm">
+          {editing ? (
+            <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg> Update Widget</>
+          ) : (
+            <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg> Add to Dashboard</>
+          )}
         </button>
-        {editing && (
-          <button onClick={onCancelEdit} className="w-full px-3 py-1.5 rounded-lg text-[12px] text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
-            Cancel Editing
-          </button>
-        )}
       </div>
     </div>
   );
@@ -1333,7 +1449,7 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
     ro.observe(el);
     setCanvasWidth(el.clientWidth);
     return () => ro.disconnect();
-  }, []);
+  }, [activeId]);
 
   const updateActiveDashboard = useCallback((w: WidgetConfig[], l: Record<string, WidgetLayout>) => {
     if (!activeId) return;
@@ -1451,6 +1567,10 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
     }),
   [widgets, layouts]);
 
+  const gridCfg = useMemo(() => ({ cols: 12, rowHeight: 60 }), []);
+  const dragCfg = useMemo(() => ({ enabled: true, handle: '.drag-handle' }), []);
+  const resizeCfg = useMemo(() => ({ enabled: true }), []);
+
   const emptyState = (title: string, desc: string, action?: JSX.Element) => (
     <div className="h-full flex items-center justify-center">
       <div className="text-center">
@@ -1517,16 +1637,19 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
 
       {/* Canvas + Toolbox */}
       <div className="flex-1 flex min-h-0">
-        <div ref={canvasRef} className="flex-1 overflow-auto bg-gray-50 min-w-0">
+        <div ref={canvasRef} className="flex-1 overflow-auto bg-gray-50 min-w-0" onClick={(e) => {
+          const t = e.target as HTMLElement;
+          if (t === e.currentTarget || t.classList.contains('react-grid-layout') || t.classList.contains('p-4')) setEditing(null);
+        }}>
           {widgets.length === 0 ? (
             emptyState('Your dashboard is empty', 'Configure a chart in the toolbox and click "Add to Dashboard"')
           ) : (
             <GridLayout
               className="p-4"
               layout={gridLayout}
-              gridConfig={{ cols: 12, rowHeight: 60 }}
-              dragConfig={{ enabled: true, handle: '.drag-handle' }}
-              resizeConfig={{ enabled: true }}
+              gridConfig={gridCfg}
+              dragConfig={dragCfg}
+              resizeConfig={resizeCfg}
               width={canvasWidth - 32}
               onLayoutChange={handleLayoutChange}
             >
@@ -1535,9 +1658,9 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
                   {(w.widgetType ?? 'chart') === 'chart' ? (
                     <ChartWidget config={w as ChartWidgetConfig} tables={tables} onEdit={() => setEditing(w)} onDelete={() => handleDelete(w.id)} />
                   ) : w.widgetType === 'text' ? (
-                    <TextWidget config={w as TextWidgetConfig} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
+                    <TextWidget config={w as TextWidgetConfig} onEdit={() => setEditing(w)} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
                   ) : (
-                    <DataTableWidget config={w as TableWidgetConfig} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
+                    <DataTableWidget config={w as TableWidgetConfig} onEdit={() => setEditing(w)} onDelete={() => handleDelete(w.id)} onUpdate={(c) => handleInlineUpdate(c)} />
                   )}
                 </div>
               ))}

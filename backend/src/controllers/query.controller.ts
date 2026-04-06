@@ -33,23 +33,26 @@ export const queryTable = asyncHandler(
       });
     }
 
-    // Generate SQL from natural language
-    const sql = await groqService.generateSQL(
+    // Generate SQL from natural language (with classification)
+    const aiResult = await groqService.generateSQL(
       tablesContext,
       question,
       history
     );
 
     // Execute the generated query
-    const rows = await duckdbService.all(sql);
+    const rows = await duckdbService.all(aiResult.sql);
     const columns = rows.length > 0 ? Object.keys(rows[0] as Record<string, unknown>) : [];
 
-    logger.info(`Query executed: "${question}" — ${rows.length} rows`);
+    logger.info(`Query executed: "${question}" — [${aiResult.responseType}] ${rows.length} rows`);
 
     return sendSuccess(res, {
       columns,
       rows,
       totalRows: rows.length,
+      responseType: aiResult.responseType,
+      chartConfig: aiResult.chartConfig,
+      insight: aiResult.insight,
     });
   }
 );

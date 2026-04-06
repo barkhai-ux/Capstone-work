@@ -112,7 +112,6 @@ export default function App() {
         ) : (
           <Dashboard
             tables={tables}
-            onSelectTable={() => {}}
             onImport={() => setModal({ type: 'upload' })}
           />
         )}

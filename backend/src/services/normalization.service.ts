@@ -111,6 +111,17 @@ class NormalizationService {
       throw new Error(`Table with ID ${tableId} not found`);
     }
 
+    // Preserve a snapshot of the original table for charting
+    const snapshotName = `original_${table.name}`;
+    if (!(await duckdbService.tableExists(snapshotName))) {
+      await duckdbService.run(
+        `CREATE TABLE "${snapshotName}" AS SELECT * FROM "${table.name}"`
+      );
+      const snapshotId = uuidv4();
+      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${table.name}`);
+      logger.info(`Preserved original table as "${snapshotName}" for charting`);
+    }
+
     const lookupTablesCreated: string[] = [];
     const columnsNormalized: string[] = [];
     const lookupTableMap: Map<string, string> = new Map(); // columnName -> lookupTableName
@@ -222,6 +233,17 @@ class NormalizationService {
     const table = await duckdbService.getTableById(tableId);
     if (!table) {
       throw new Error(`Table with ID ${tableId} not found`);
+    }
+
+    // Preserve a snapshot of the original table for charting
+    const snapshotName = `original_${table.name}`;
+    if (!(await duckdbService.tableExists(snapshotName))) {
+      await duckdbService.run(
+        `CREATE TABLE "${snapshotName}" AS SELECT * FROM "${table.name}"`
+      );
+      const snapshotId = uuidv4();
+      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${table.name}`);
+      logger.info(`Preserved original table as "${snapshotName}" for charting`);
     }
 
     const dimensionTablesCreated: string[] = [];

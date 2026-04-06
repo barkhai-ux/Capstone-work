@@ -111,10 +111,19 @@ export interface StarSchemaResult {
 
 // ── Query types ──
 
+export interface QueryChartConfig {
+  chartType: string;
+  labelColumn: string;
+  valueColumn: string;
+}
+
 export interface QueryResult {
   columns: string[];
   rows: Record<string, unknown>[];
   totalRows: number;
+  responseType?: 'chart' | 'table';
+  chartConfig?: QueryChartConfig;
+  insight?: string;
 }
 
 // ── Snippet types ──

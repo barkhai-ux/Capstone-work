@@ -378,8 +378,8 @@ ${tablesDescription}
 User request: "${sanitizedPrompt}"
 
 Rules:
-1. Choose the best chartType: "bar", "line", "pie", or "doughnut" based on the user's request.
-2. Pick the most relevant tableId, labelColumn (categorical/text column for X-axis or categories), and valueColumn (numeric column for Y-axis or values).
+1. Choose the best chartType: "bar", "line", "area", "pie", "doughnut", "scatter", "radar", or "polarArea" based on the user's request. Use "scatter" for correlation analysis, "radar" for multi-metric comparisons, "polarArea" for proportional data with magnitude, "area" for trend visualization with filled regions.
+2. Pick the most relevant tableId (or tableIds as an array if data from multiple tables should be combined), labelColumn (categorical/text column for X-axis or categories), and valueColumn (numeric column for Y-axis or values).
 3. Pick aggregation: "sum", "avg", "count", "min", or "max" based on the user's intent.
 4. Set topN: number of top items to show (0 = all, 5 = top 5, 10 = top 10, etc.). If the user says "top 5", "top 10", etc., set it accordingly. Default to 0 (all) if not specified.
 5. Set dateGrouping: "none", "yearly", "quarterly", or "monthly". If the labelColumn is a DATE or TIMESTAMP type and the chart is a line or bar chart, choose an appropriate grouping based on the data. If the user mentions yearly/monthly/quarterly, use that. Default to "none" for non-date columns.
@@ -404,7 +404,7 @@ Rules:
 Respond ONLY with valid JSON:
 {
   "chartType": "bar",
-  "tableId": "the-table-id",
+  "tableIds": ["the-table-id"],
   "labelColumn": "column_name",
   "valueColumn": "column_name",
   "aggregation": "sum",
@@ -471,14 +471,15 @@ User request: "${sanitizedPrompt}"
 
 Design a dashboard with 4-8 well-chosen widgets. Mix different chart types for visual variety. Include:
 - Key metric overview charts (bar/doughnut for top categories)
-- Trend analysis (line charts if date/time columns exist)
-- Distribution breakdowns (pie/doughnut for proportions)
-- Comparison charts (bar for comparing segments)
+- Trend analysis (line/area charts if date/time columns exist)
+- Distribution breakdowns (pie/doughnut/polarArea for proportions)
+- Comparison charts (bar/radar for comparing segments)
+- Correlation analysis (scatter for numeric relationships)
 - A text widget with a brief dashboard summary/insight
 
 For each widget, provide:
 - widgetType: "chart" or "text"
-- For chart widgets: chartType ("bar", "line", "pie", "doughnut"), tableId, labelColumn, valueColumn, aggregation ("sum", "avg", "count", "min", "max"), topN (0=all, 5, 10, etc.), dateGrouping ("none", "yearly", "quarterly", "monthly" — use an appropriate grouping when the labelColumn is a DATE/TIMESTAMP type, default "none" for non-date columns)
+- For chart widgets: chartType ("bar", "line", "area", "pie", "doughnut", "scatter", "radar", "polarArea"), tableIds (array of table IDs — use multiple when combining data from several tables), labelColumn, valueColumn, aggregation ("sum", "avg", "count", "min", "max"), topN (0=all, 5, 10, etc.), dateGrouping ("none", "yearly", "quarterly", "monthly" — use an appropriate grouping when the labelColumn is a DATE/TIMESTAMP type, default "none" for non-date columns)
 - For text widgets: content (2-3 sentences summarizing a key insight about the data)
 - title: descriptive title
 - style: object with these fields:
@@ -503,7 +504,7 @@ Respond ONLY with a valid JSON array:
   {
     "widgetType": "chart",
     "chartType": "bar",
-    "tableId": "id",
+    "tableIds": ["id"],
     "labelColumn": "col",
     "valueColumn": "col",
     "aggregation": "sum",
@@ -560,7 +561,12 @@ Respond ONLY with a valid JSON array:
     tables: { name: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[],
     question: string,
     history?: { role: 'user' | 'assistant'; content: string }[]
-  ): Promise<string> {
+  ): Promise<{
+    sql: string;
+    responseType: 'chart' | 'table';
+    chartConfig?: { chartType: string; labelColumn: string; valueColumn: string };
+    insight?: string;
+  }> {
     const client = this.getClient();
     const sanitizedQuestion = sanitizePromptInput(question);
 
@@ -583,37 +589,61 @@ Respond ONLY with a valid JSON array:
       conversationContext = `\nConversation history (for context — the user may reference previous questions/results):\n${historyText}\n`;
     }
 
-    const prompt = `You are a DuckDB SQL expert. Given the database tables below and the user's question, write a single SELECT query that answers it.
+    const prompt = `You are a DuckDB SQL expert and data analyst. Given the database tables below and the user's question:
+1. Classify whether the answer is best shown as a CHART or a DATA TABLE
+2. Generate the SQL query
+3. If chart: specify chart type and column mapping
+4. Write a brief insight sentence about what the result shows
 
 ${tablesDescription}
 ${conversationContext}
 User question: "${question}"
 
-Rules:
+CLASSIFICATION GUIDE — responseType:
+- "chart": The user explicitly asks for a chart/visualization/graph, OR the question is about trends over time, distributions, proportions, comparisons across categories, correlations between metrics. Examples: "show me sales trend", "compare revenue by region", "what's the distribution of orders", "visualize monthly growth".
+- "table": The user asks for specific records, lists, lookups, rankings, or factual answers. Examples: "who are our top 10 customers", "list all orders from March", "what is the total revenue", "show me rows where status is pending".
+
+CHART TYPE GUIDE (only when responseType is "chart"):
+- "bar": comparing values across categories
+- "line": trends over time or sequential data
+- "pie" or "doughnut": proportions/percentages of a whole
+- "scatter": correlation between two numeric values
+- "radar": multi-metric comparison
+- "polarArea": proportional data with magnitude
+- "area": trends with emphasis on volume
+
+SQL RULES:
 1. Write a single DuckDB-compatible SELECT query. No DDL, no INSERT, no UPDATE, no DELETE, no DROP.
 2. Always quote table names and column names with double quotes.
 3. Use only tables and columns that exist in the schema above.
-4. If the data spans multiple tables, use JOINs to combine them. Look at column names and sample data to identify join keys (e.g. foreign key columns that reference IDs in other tables).
-5. CRITICAL: Carefully read the user's question and select the columns that directly answer it. For example:
-   - If the user asks about "customers", use customer-related columns (e.g. Customer Name, Customer ID), NOT unrelated columns like Ship Mode or Region.
-   - If the user asks about "top 10 by purchase/sales", ORDER BY the sales/revenue/amount column DESC and LIMIT 10.
-   - Match the intent of the question to the most relevant columns and aggregations.
-6. If the question asks for aggregation, use GROUP BY appropriately.
-7. Limit results to 500 rows max unless the user specifies a different limit (e.g. "top 10").
-8. IMPORTANT: If the user references a previous question or result (e.g. "top 10 of that", "filter those", "sort the previous result"), use the conversation history to understand what they mean. Build a new query that applies the user's refinement to the previous query's logic.
-9. Respond with ONLY the raw SQL query. No explanation, no markdown, no code fences.`;
+4. If the data spans multiple tables, use JOINs. Look at column names and sample data for join keys.
+5. CRITICAL: Select columns that directly answer the question.
+6. If aggregation is needed, use GROUP BY appropriately.
+7. Limit results to 500 rows max unless the user specifies a different limit.
+8. If the user references previous questions, use conversation history for context.
+9. For chart queries: the SQL must produce at least a label column (categories/dates) and a value column (numbers). ORDER BY the value or date column as appropriate.
+
+Respond ONLY with valid JSON (no markdown, no code fences):
+{
+  "sql": "SELECT ...",
+  "responseType": "chart" or "table",
+  "chartConfig": { "chartType": "bar", "labelColumn": "col_name", "valueColumn": "col_name" },
+  "insight": "Brief 1-2 sentence insight about what this data reveals"
+}
+
+For "table" responseType, omit the chartConfig field.`;
 
     const response = await client.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages: [
         {
           role: 'system',
-          content: 'You are a SQL expert. Read the user\'s question carefully and select only the columns that directly answer it. If the user references previous questions, use the conversation history to understand context and build upon previous queries. Respond with ONLY a single raw SQL SELECT query. No markdown, no explanation, no code blocks.',
+          content: 'You are a SQL and data analysis expert. Classify user questions as "chart" (visualization/trends/comparisons) or "table" (lookups/lists/specific data), generate a DuckDB SELECT query, and provide a brief insight. Respond only with valid JSON. No markdown, no code blocks.',
         },
         { role: 'user', content: prompt },
       ],
       temperature: 0.1,
-      max_tokens: 1000,
+      max_tokens: 1500,
     });
 
     const content = response.choices[0]?.message?.content?.trim();
@@ -621,11 +651,31 @@ Rules:
       throw new Error('Empty response from AI');
     }
 
-    // Strip markdown fences if present
-    let sql = content;
-    const fenceMatch = sql.match(/```(?:sql)?\s*([\s\S]*?)```/);
+    // Parse JSON response, stripping markdown fences if present
+    let jsonStr = content;
+    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fenceMatch) {
-      sql = fenceMatch[1].trim();
+      jsonStr = fenceMatch[1].trim();
+    }
+
+    let parsed: { sql: string; responseType: 'chart' | 'table'; chartConfig?: { chartType: string; labelColumn: string; valueColumn: string }; insight?: string };
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch {
+      // Fallback: treat content as raw SQL (backwards compatibility)
+      logger.warn('Failed to parse JSON response, falling back to raw SQL');
+      parsed = { sql: jsonStr, responseType: 'table' };
+    }
+
+    if (!parsed.sql) {
+      throw new Error('AI response missing SQL query');
+    }
+
+    // Strip markdown fences from SQL if present
+    let sql = parsed.sql;
+    const sqlFence = sql.match(/```(?:sql)?\s*([\s\S]*?)```/);
+    if (sqlFence) {
+      sql = sqlFence[1].trim();
     }
 
     // Safety: only allow SELECT
@@ -639,7 +689,7 @@ Rules:
     }
 
     if (normalized.includes(';')) {
-      throw new Error('AI generated a query with multiple statements. Only single queries are allowed.');
+      sql = sql.replace(/;/g, '').trim();
     }
 
     const forbidden = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|COPY|ATTACH|READ_CSV|READ_PARQUET|HTTPFS|INSTALL|LOAD)\b/;
@@ -647,8 +697,13 @@ Rules:
       throw new Error('AI generated a query with forbidden operations.');
     }
 
-    logger.info(`Generated SQL for question: "${sanitizedQuestion}" → ${sql}`);
-    return sql;
+    // Validate responseType
+    if (parsed.responseType !== 'chart' && parsed.responseType !== 'table') {
+      parsed.responseType = 'table';
+    }
+
+    logger.info(`Generated SQL for question: "${sanitizedQuestion}" → [${parsed.responseType}] ${sql}`);
+    return { ...parsed, sql };
   }
 }
 

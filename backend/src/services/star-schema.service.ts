@@ -61,6 +61,17 @@ class StarSchemaService {
     const dimensionTablesCreated: string[] = [];
     const allDimColumns: string[] = [];
 
+    // Step 0: Preserve a snapshot of the original table for charting
+    const snapshotName = `original_${originalTableName}`;
+    if (!(await duckdbService.tableExists(snapshotName))) {
+      await duckdbService.run(
+        `CREATE TABLE "${snapshotName}" AS SELECT * FROM "${originalTableName}"`
+      );
+      const snapshotId = uuidv4();
+      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${originalTableName}`);
+      logger.info(`Preserved original table as "${snapshotName}" for charting`);
+    }
+
     // Track dimension info for building the fact table
     const dimJoinInfo: {
       dimTable: string;
