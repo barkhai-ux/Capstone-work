@@ -699,8 +699,8 @@ const PREVIEW_TABLE_ROWS = 4;
 const PREVIEW_TEXT_LENGTH = 140;
 /** Max number of widgets shown in the card grid thumbnail. */
 const PREVIEW_MAX_WIDGETS = 6;
-/** Number of grid columns in the dashboard layout. */
-const GRID_COLS = 12;
+/** Number of grid columns in the dashboard layout (matches the react-grid-layout cols config). */
+const PREVIEW_GRID_COLS = 12;
 
 // ── Mini widget chart options (shared, animation-free) ──
 
@@ -962,18 +962,18 @@ function DashboardCardPreview({ dashboard, tables }: {
     );
   }
 
-  // Compute bounding box of all preview widgets using their saved layout positions.
+  // Compute the total vertical extent of all preview widgets using their saved layout positions.
   // Fall back to default grid positions when layout data is missing.
-  let maxY = 0;
+  let totalGridHeight = 0;
   widgetsToPreview.forEach((w, i) => {
     const saved = dashboard.layouts[w.id];
     const wt = w.widgetType ?? 'chart';
     const l = saved ?? (wt === 'text'
       ? { x: (i % 4) * 3, y: Math.floor(i / 4) * 2, w: 3, h: 2 }
       : { x: (i % 2) * 6, y: Math.floor(i / 2) * 4, w: 6, h: 4 });
-    maxY = Math.max(maxY, l.y + l.h);
+    totalGridHeight = Math.max(totalGridHeight, l.y + l.h);
   });
-  if (maxY === 0) maxY = 4;
+  if (totalGridHeight === 0) totalGridHeight = 4;
 
   return (
     <div className="relative w-full h-full overflow-hidden" style={{ minHeight: 0 }}>
@@ -984,10 +984,10 @@ function DashboardCardPreview({ dashboard, tables }: {
           ? { x: (i % 4) * 3, y: Math.floor(i / 4) * 2, w: 3, h: 2 }
           : { x: (i % 2) * 6, y: Math.floor(i / 2) * 4, w: 6, h: 4 });
 
-        const leftPct = (l.x / GRID_COLS) * 100;
-        const topPct = (l.y / maxY) * 100;
-        const widthPct = (l.w / GRID_COLS) * 100;
-        const heightPct = (l.h / maxY) * 100;
+        const leftPct = (l.x / PREVIEW_GRID_COLS) * 100;
+        const topPct = (l.y / totalGridHeight) * 100;
+        const widthPct = (l.w / PREVIEW_GRID_COLS) * 100;
+        const heightPct = (l.h / totalGridHeight) * 100;
 
         const bg = (w as ChartWidgetConfig | TextWidgetConfig | TableWidgetConfig).style?.bgColor ?? '#ffffff';
 
