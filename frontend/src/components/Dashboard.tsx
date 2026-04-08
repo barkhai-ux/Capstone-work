@@ -685,6 +685,19 @@ function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
 
 const previewTableCache = new Map<string, Record<string, unknown>[]>();
 
+/** Number of rows to fetch per table for card preview thumbnails (lightweight strategy). */
+const PREVIEW_ROW_LIMIT = 20;
+/** Max chart entries (groups) shown in a preview thumbnail. */
+const PREVIEW_CHART_ENTRIES = 8;
+/** Max scatter plot points shown in a preview thumbnail. */
+const PREVIEW_SCATTER_POINTS = 20;
+/** Max columns shown in a table widget preview. */
+const PREVIEW_TABLE_COLS = 3;
+/** Max rows shown in a table widget preview. */
+const PREVIEW_TABLE_ROWS = 4;
+/** Max characters shown in a text widget preview. */
+const PREVIEW_TEXT_LENGTH = 140;
+
 // ── Dashboard Card Preview ──
 
 function DashboardCardPreview({ dashboard, tables }: {
@@ -695,7 +708,7 @@ function DashboardCardPreview({ dashboard, tables }: {
   const [tableData, setTableData] = useState<Map<string, Record<string, unknown>[]>>(() => new Map());
   const [loading, setLoading] = useState(false);
 
-  const depKey = widgetsToPreview.map(w => w.id).join(',');
+  const widgetIdsKey = widgetsToPreview.map(w => w.id).join(',');
 
   useEffect(() => {
     const needed = new Set<string>();
@@ -726,7 +739,7 @@ function DashboardCardPreview({ dashboard, tables }: {
     setLoading(true);
     Promise.all(
       toFetch.map(id =>
-        api.getTableData(id, 1, 20)
+        api.getTableData(id, 1, PREVIEW_ROW_LIMIT)
           .then(res => ({ id, rows: (res.success && res.data ? res.data.rows : []) as Record<string, unknown>[] }))
           .catch(() => ({ id, rows: [] as Record<string, unknown>[] }))
       )
@@ -740,7 +753,7 @@ function DashboardCardPreview({ dashboard, tables }: {
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [depKey, tables]);
+  }, [widgetIdsKey, tables]);
 
   if (widgetsToPreview.length === 0) {
     return (
@@ -774,7 +787,7 @@ function DashboardCardPreview({ dashboard, tables }: {
         )}
         {tw.content ? (
           <p className="text-[9px] text-gray-500 leading-relaxed line-clamp-4 whitespace-pre-line">
-            {tw.content.slice(0, 140)}
+            {tw.content.slice(0, PREVIEW_TEXT_LENGTH)}
           </p>
         ) : (
           <p className="text-[9px] italic text-gray-300">No content</p>
@@ -787,8 +800,8 @@ function DashboardCardPreview({ dashboard, tables }: {
   if (wt === 'table') {
     const tw = firstWidget as TableWidgetConfig;
     const rows = tableData.get(tw.tableId) ?? [];
-    const cols = tw.columns.slice(0, 3);
-    const previewRows = rows.slice(0, 4);
+    const cols = tw.columns.slice(0, PREVIEW_TABLE_COLS);
+    const previewRows = rows.slice(0, PREVIEW_TABLE_ROWS);
 
     if (cols.length === 0 || previewRows.length === 0) {
       return (
@@ -856,7 +869,7 @@ function DashboardCardPreview({ dashboard, tables }: {
     }
     miniChartData = {
       datasets: [{
-        data: points.slice(0, 20),
+        data: points.slice(0, PREVIEW_SCATTER_POINTS),
         backgroundColor: previewColors[0] + '99',
         borderColor: previewColors[0],
         pointRadius: 3,
@@ -873,7 +886,7 @@ function DashboardCardPreview({ dashboard, tables }: {
     }
     const entries = Object.entries(groups)
       .map(([l, vals]) => [l, aggregate(vals, cw.aggregation)] as const)
-      .slice(0, 8);
+      .slice(0, PREVIEW_CHART_ENTRIES);
     miniChartData = {
       labels: entries.map(([l]) => l),
       datasets: [{
