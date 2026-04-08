@@ -681,10 +681,283 @@ function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
   );
 }
 
+// ── Preview Cache (in-memory, session-scoped) ──
+
+const previewTableCache = new Map<string, Record<string, unknown>[]>();
+
+/** Number of rows to fetch per table for card preview thumbnails (lightweight strategy). */
+const PREVIEW_ROW_LIMIT = 20;
+/** Max chart entries (groups) shown in a preview thumbnail. */
+const PREVIEW_CHART_ENTRIES = 8;
+/** Max scatter plot points shown in a preview thumbnail. */
+const PREVIEW_SCATTER_POINTS = 20;
+/** Max columns shown in a table widget preview. */
+const PREVIEW_TABLE_COLS = 3;
+/** Max rows shown in a table widget preview. */
+const PREVIEW_TABLE_ROWS = 4;
+/** Max characters shown in a text widget preview. */
+const PREVIEW_TEXT_LENGTH = 140;
+
+// ── Dashboard Card Preview ──
+
+function DashboardCardPreview({ dashboard, tables }: {
+  dashboard: DashboardInstance;
+  tables: TableInfo[];
+}) {
+  const widgetsToPreview = dashboard.widgets.slice(0, 2);
+  const [tableData, setTableData] = useState<Map<string, Record<string, unknown>[]>>(() => new Map());
+  const [loading, setLoading] = useState(false);
+
+  const widgetIdsKey = widgetsToPreview.map(w => w.id).join(',');
+
+  useEffect(() => {
+    const needed = new Set<string>();
+    for (const w of widgetsToPreview) {
+      const wt = w.widgetType ?? 'chart';
+      if (wt === 'chart') {
+        for (const id of getTableIds(w as ChartWidgetConfig)) {
+          if (tables.some(t => t.id === id)) needed.add(id);
+        }
+      } else if (wt === 'table') {
+        const tableId = (w as TableWidgetConfig).tableId;
+        if (tableId && tables.some(t => t.id === tableId)) needed.add(tableId);
+      }
+    }
+
+    const toFetch = [...needed].filter(id => !previewTableCache.has(id));
+
+    const populate = () => {
+      setTableData(new Map([...needed].map(id => [id, previewTableCache.get(id) ?? []])));
+    };
+
+    if (toFetch.length === 0) {
+      populate();
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    Promise.all(
+      toFetch.map(id =>
+        api.getTableData(id, 1, PREVIEW_ROW_LIMIT)
+          .then(res => ({ id, rows: (res.success && res.data ? res.data.rows : []) as Record<string, unknown>[] }))
+          .catch(() => ({ id, rows: [] as Record<string, unknown>[] }))
+      )
+    ).then(results => {
+      if (cancelled) return;
+      for (const { id, rows } of results) previewTableCache.set(id, rows);
+      populate();
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widgetIdsKey, tables]);
+
+  if (widgetsToPreview.length === 0) {
+    return (
+      <div className="text-center">
+        <svg className="w-8 h-8 text-gray-200 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+        </svg>
+        <p className="text-[10px] text-gray-300 mt-1">No widgets yet</p>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <div className="w-4 h-4 border-2 border-blue-200 border-t-blue-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  const firstWidget = widgetsToPreview[0];
+  const wt = firstWidget.widgetType ?? 'chart';
+
+  // ── Text widget preview ──
+  if (wt === 'text') {
+    const tw = firstWidget as TextWidgetConfig;
+    return (
+      <div className="w-full h-full flex flex-col justify-start overflow-hidden">
+        {tw.title && (
+          <p className="text-[10px] font-semibold text-gray-700 truncate mb-1">{tw.title}</p>
+        )}
+        {tw.content ? (
+          <p className="text-[9px] text-gray-500 leading-relaxed line-clamp-4 whitespace-pre-line">
+            {tw.content.slice(0, PREVIEW_TEXT_LENGTH)}
+          </p>
+        ) : (
+          <p className="text-[9px] italic text-gray-300">No content</p>
+        )}
+      </div>
+    );
+  }
+
+  // ── Table widget preview ──
+  if (wt === 'table') {
+    const tw = firstWidget as TableWidgetConfig;
+    const rows = tableData.get(tw.tableId) ?? [];
+    const cols = tw.columns.slice(0, PREVIEW_TABLE_COLS);
+    const previewRows = rows.slice(0, PREVIEW_TABLE_ROWS);
+
+    if (cols.length === 0 || previewRows.length === 0) {
+      return (
+        <div className="w-full h-full flex items-center justify-center">
+          <p className="text-[10px] text-gray-400">No preview data</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="w-full h-full overflow-hidden">
+        <table className="w-full text-[8px] border-collapse">
+          <thead>
+            <tr>
+              {cols.map(col => (
+                <th key={col} className="px-1 py-0.5 text-left font-semibold text-gray-500 truncate border-b border-gray-100 bg-gray-50/70">
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {previewRows.map((row, ri) => (
+              <tr key={ri}>
+                {cols.map(col => (
+                  <td key={col} className="px-1 py-0.5 truncate text-gray-600 border-b border-gray-50 max-w-[60px]">
+                    {resolveLabel(row[col])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // ── Chart widget preview ──
+  const cw = firstWidget as ChartWidgetConfig;
+  const ids = getTableIds(cw);
+  const mergedRows: Record<string, unknown>[] = [];
+  for (const id of ids) mergedRows.push(...(tableData.get(id) ?? []));
+
+  if (mergedRows.length === 0) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <p className="text-[10px] text-gray-400">No preview data</p>
+      </div>
+    );
+  }
+
+  const previewColors = (cw.style?.chartColors?.length > 0 ? cw.style.chartColors : DEFAULT_COLORS);
+  const previewLineColor = cw.style?.lineColor ?? DEFAULT_COLORS[0];
+  const isLineOrAreaPreview = cw.chartType === 'line' || cw.chartType === 'area';
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let miniChartData: any;
+
+  if (cw.chartType === 'scatter') {
+    const points: { x: number; y: number }[] = [];
+    for (const row of mergedRows) {
+      const x = resolveValue(row[cw.labelColumn]);
+      const y = resolveValue(row[cw.valueColumn]);
+      if (x !== null && y !== null) points.push({ x, y });
+    }
+    miniChartData = {
+      datasets: [{
+        data: points.slice(0, PREVIEW_SCATTER_POINTS),
+        backgroundColor: previewColors[0] + '99',
+        borderColor: previewColors[0],
+        pointRadius: 3,
+      }],
+    };
+  } else {
+    const dg = cw.dateGrouping ?? 'none';
+    const groups: Record<string, number[]> = {};
+    for (const row of mergedRows) {
+      const label = dg !== 'none' ? resolveDateLabel(row[cw.labelColumn], dg) : resolveLabel(row[cw.labelColumn]);
+      const val = resolveValue(row[cw.valueColumn]);
+      if (!groups[label]) groups[label] = [];
+      if (val !== null) groups[label].push(val);
+    }
+    const entries = Object.entries(groups)
+      .map(([l, vals]) => [l, aggregate(vals, cw.aggregation)] as const)
+      .slice(0, PREVIEW_CHART_ENTRIES);
+    miniChartData = {
+      labels: entries.map(([l]) => l),
+      datasets: [{
+        data: entries.map(([, v]) => Math.round(v * 100) / 100),
+        backgroundColor: isLineOrAreaPreview
+          ? `${previewLineColor}18`
+          : (cw.chartType === 'radar' ? `${previewColors[0]}33` : previewColors.slice(0, entries.length)),
+        borderColor: isLineOrAreaPreview ? previewLineColor : previewColors.slice(0, entries.length),
+        fill: isLineOrAreaPreview || cw.chartType === 'radar',
+        borderWidth: isLineOrAreaPreview ? 1.5 : 1,
+        pointRadius: 0,
+      }],
+    };
+  }
+
+  const miniAxisOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false as const,
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: { x: { display: false }, y: { display: false } },
+    elements: {
+      bar: { borderRadius: 2, borderSkipped: false as const },
+      line: { tension: 0.35, borderWidth: 1.5 },
+      point: { radius: 0 },
+    },
+  };
+
+  const miniRadarOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false as const,
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: { r: { display: false } },
+    elements: { line: { tension: 0.35, borderWidth: 1.5 }, point: { radius: 0 } },
+  };
+
+  const miniCircOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false as const,
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    elements: { arc: { borderWidth: 1 } },
+  };
+
+  return (
+    <div className="w-full h-full">
+      {cw.chartType === 'bar' ? (
+        <Bar data={miniChartData} options={miniAxisOpts} />
+      ) : isLineOrAreaPreview ? (
+        <Line data={miniChartData} options={miniAxisOpts} />
+      ) : cw.chartType === 'scatter' ? (
+        <Scatter data={miniChartData} options={miniAxisOpts} />
+      ) : cw.chartType === 'radar' ? (
+        <Radar data={miniChartData} options={miniRadarOpts} />
+      ) : cw.chartType === 'polarArea' ? (
+        <PolarArea data={miniChartData} options={miniCircOpts} />
+      ) : cw.chartType === 'pie' ? (
+        <Pie data={miniChartData} options={miniCircOpts} />
+      ) : (
+        <Doughnut data={miniChartData} options={miniCircOpts} />
+      )}
+    </div>
+  );
+}
+
 // ── Dashboard Home (Power BI style card grid) ──
 
-function DashboardHome({ dashboards, onSelect, onNew, onDelete, onRename }: {
+function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename }: {
   dashboards: DashboardInstance[];
+  tables: TableInfo[];
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -751,53 +1024,8 @@ function DashboardHome({ dashboards, onSelect, onNew, onDelete, onRename }: {
               onClick={() => onSelect(db.id)}
             >
               {/* Preview area */}
-              <div className="flex-1 bg-gradient-to-br from-slate-50 to-white p-3 flex items-center justify-center min-h-0">
-                {db.widgets.length === 0 ? (
-                  <div className="text-center">
-                    <svg className="w-8 h-8 text-gray-200 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-                    </svg>
-                    <p className="text-[10px] text-gray-300 mt-1">No widgets yet</p>
-                  </div>
-                ) : (
-                  /* Mini widget preview grid */
-                  <div className="w-full h-full grid grid-cols-4 grid-rows-3 gap-1">
-                    {db.widgets.slice(0, 6).map(w => {
-                      const wt = w.widgetType ?? 'chart';
-                      const ly = db.layouts[w.id];
-                      const colSpan = ly ? Math.min(ly.w > 4 ? 2 : 1, 4) : (wt === 'text' ? 1 : 2);
-                      const rowSpan = ly ? Math.min(ly.h > 3 ? 2 : 1, 3) : (wt === 'text' ? 1 : 2);
-                      const colors: Record<string, string> = {
-                        chart: 'bg-blue-500/20 border-blue-400/50',
-                        text: 'bg-amber-500/20 border-amber-400/50',
-                        table: 'bg-emerald-500/20 border-emerald-400/50',
-                      };
-                      return (
-                        <div
-                          key={w.id}
-                          className={`rounded border ${colors[wt] ?? 'bg-gray-200/60 border-gray-300/40'} flex items-center justify-center`}
-                          style={{ gridColumn: `span ${colSpan}`, gridRow: `span ${rowSpan}` }}
-                        >
-                          {wt === 'chart' && (
-                            <svg className="w-4 h-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-                            </svg>
-                          )}
-                          {wt === 'text' && (
-                            <svg className="w-3.5 h-3.5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
-                            </svg>
-                          )}
-                          {wt === 'table' && (
-                            <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M12 12h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125M21.375 12c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125M12 17.25v-5.625m0 5.625c0 .621.504 1.125 1.125 1.125h2.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H12m0 3.75c0 .621-.504 1.125-1.125 1.125H8.625A1.125 1.125 0 017.5 17.25v-1.5c0-.621.504-1.125 1.125-1.125H12" />
-                            </svg>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+              <div className="flex-1 bg-gradient-to-br from-slate-50 to-white p-3 flex items-center justify-center min-h-0 overflow-hidden">
+                <DashboardCardPreview dashboard={db} tables={tables} />
               </div>
 
               {/* Card footer */}
@@ -1606,6 +1834,7 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
         ) : (
           <DashboardHome
             dashboards={dashboards}
+            tables={tables}
             onSelect={handleSelectDashboard}
             onNew={handleNewDashboard}
             onDelete={handleDeleteDashboard}
