@@ -751,7 +751,7 @@ function DashboardHome({ dashboards, onSelect, onNew, onDelete, onRename }: {
               onClick={() => onSelect(db.id)}
             >
               {/* Preview area */}
-              <div className="flex-1 bg-gradient-to-br from-gray-50 to-gray-100 p-3 flex items-center justify-center min-h-0">
+              <div className="flex-1 bg-gradient-to-br from-slate-50 to-white p-3 flex items-center justify-center min-h-0">
                 {db.widgets.length === 0 ? (
                   <div className="text-center">
                     <svg className="w-8 h-8 text-gray-200 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
@@ -768,9 +768,9 @@ function DashboardHome({ dashboards, onSelect, onNew, onDelete, onRename }: {
                       const colSpan = ly ? Math.min(ly.w > 4 ? 2 : 1, 4) : (wt === 'text' ? 1 : 2);
                       const rowSpan = ly ? Math.min(ly.h > 3 ? 2 : 1, 3) : (wt === 'text' ? 1 : 2);
                       const colors: Record<string, string> = {
-                        chart: 'bg-blue-200/60 border-blue-300/40',
-                        text: 'bg-amber-200/60 border-amber-300/40',
-                        table: 'bg-emerald-200/60 border-emerald-300/40',
+                        chart: 'bg-blue-500/20 border-blue-400/50',
+                        text: 'bg-amber-500/20 border-amber-400/50',
+                        table: 'bg-emerald-500/20 border-emerald-400/50',
                       };
                       return (
                         <div
@@ -779,17 +779,17 @@ function DashboardHome({ dashboards, onSelect, onNew, onDelete, onRename }: {
                           style={{ gridColumn: `span ${colSpan}`, gridRow: `span ${rowSpan}` }}
                         >
                           {wt === 'chart' && (
-                            <svg className="w-4 h-4 text-blue-400/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <svg className="w-4 h-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
                             </svg>
                           )}
                           {wt === 'text' && (
-                            <svg className="w-3.5 h-3.5 text-amber-400/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <svg className="w-3.5 h-3.5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
                             </svg>
                           )}
                           {wt === 'table' && (
-                            <svg className="w-3.5 h-3.5 text-emerald-400/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M12 12h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125M21.375 12c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125M12 17.25v-5.625m0 5.625c0 .621.504 1.125 1.125 1.125h2.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H12m0 3.75c0 .621-.504 1.125-1.125 1.125H8.625A1.125 1.125 0 017.5 17.25v-1.5c0-.621.504-1.125 1.125-1.125H12" />
                             </svg>
                           )}
