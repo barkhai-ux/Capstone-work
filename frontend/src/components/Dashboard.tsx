@@ -8,6 +8,7 @@ import { Bar, Pie, Doughnut, Line, Scatter, Radar, PolarArea } from 'react-chart
 import { GridLayout, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { api, TableInfo } from '../api';
+import ConfirmDialog from './ConfirmDialog';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, RadialLinearScale, Title, Tooltip, Legend, Filler);
 
@@ -1836,11 +1837,19 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
     ));
   }, [activeId]);
 
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
   const handleDelete = (id: string) => {
-    if (!window.confirm('Delete this widget?')) return;
+    setPendingDeleteId(id);
+  };
+
+  const confirmDeleteWidget = () => {
+    const id = pendingDeleteId;
+    if (!id) return;
     const nl = { ...layouts }; delete nl[id];
     updateActiveDashboard(widgets.filter((w) => w.id !== id), nl);
     if (editing?.id === id) setEditing(null);
+    setPendingDeleteId(null);
   };
 
   const handleLayoutChange = useCallback((layout: Layout) => {
@@ -1970,6 +1979,15 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
           <Toolbox tables={tables} editing={editing} onAdd={handleAdd} onAddMultiple={handleAddMultiple} onUpdate={handleUpdate} onCancelEdit={() => setEditing(null)} />
         )}
       </div>
+
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        title="Delete widget"
+        message="This widget will be removed from the dashboard. You can't undo this."
+        confirmLabel="Delete"
+        onConfirm={confirmDeleteWidget}
+        onCancel={() => setPendingDeleteId(null)}
+      />
     </div>
   );
 }
