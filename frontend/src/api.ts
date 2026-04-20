@@ -1,4 +1,4 @@
-const API_BASE = '/api/v1';
+const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
 
 // ── Shared types ──
 
@@ -143,9 +143,46 @@ export interface SnippetDetail extends SnippetSummary {
 
 // ── API helpers ──
 
+const COLD_START_MAX_RETRIES = 6;
+const COLD_START_BASE_DELAY_MS = 1500;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 async function request<T>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
-  const res = await fetch(url, options);
-  return res.json();
+  let attempt = 0;
+  while (true) {
+    let res: Response;
+    try {
+      res = await fetch(url, options);
+    } catch (err) {
+      if (attempt < COLD_START_MAX_RETRIES) {
+        await sleep(COLD_START_BASE_DELAY_MS * Math.pow(2, attempt));
+        attempt++;
+        continue;
+      }
+      throw err;
+    }
+
+    const contentType = res.headers.get('content-type') ?? '';
+    const isJson = contentType.includes('application/json');
+
+    // Render free-tier cold start: Cloudflare returns a plain-text 404 "Not Found"
+    // before the upstream service is up. Retry with backoff instead of surfacing it.
+    const isColdStart = !isJson && (res.status === 404 || res.status >= 500);
+    if (isColdStart && attempt < COLD_START_MAX_RETRIES) {
+      await sleep(COLD_START_BASE_DELAY_MS * Math.pow(2, attempt));
+      attempt++;
+      continue;
+    }
+
+    if (isJson) return res.json();
+
+    const text = await res.text();
+    return {
+      success: false,
+      error: text || `HTTP ${res.status}`,
+    } as ApiResponse<T>;
+  }
 }
 
 // ── API client ──
