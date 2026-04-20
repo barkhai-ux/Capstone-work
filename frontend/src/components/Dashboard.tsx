@@ -12,23 +12,21 @@ import ConfirmDialog from './ConfirmDialog';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, RadialLinearScale, Title, Tooltip, Legend, Filler);
 
-const DEFAULT_COLORS = [
-  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
-  '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#6366f1',
-  '#84cc16', '#e11d48', '#0ea5e9', '#d946ef', '#22c55e',
+// Tableau color palettes — see https://jrnold.github.io/ggthemes/reference/tableau_color_pal.html
+const COLOR_THEMES: { name: string; colors: string[] }[] = [
+  { name: 'Tableau 10', colors: ['#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC'] },
+  { name: 'Tableau 20', colors: ['#4E79A7', '#A0CBE8', '#F28E2B', '#FFBE7D', '#59A14F', '#8CD17D', '#B6992D', '#F1CE63', '#499894', '#86BCB6', '#E15759', '#FF9D9A', '#79706E', '#BAB0AC', '#D37295', '#FABFD2', '#B07AA1', '#D4A6C8', '#9D7660', '#D7B5A6'] },
+  { name: 'Color Blind', colors: ['#1170AA', '#FC7D0B', '#A3ACB9', '#57606C', '#5FA2CE', '#C85200', '#7B848F', '#A3CCE9', '#FFBC79', '#C8D0D9'] },
+  { name: 'Classic 10', colors: ['#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', '#9467BD', '#8C564B', '#E377C2', '#7F7F7F', '#BCBD22', '#17BECF'] },
+  { name: 'Classic Medium', colors: ['#729ECE', '#FF9E4A', '#67BF5C', '#ED665D', '#AD8BC9', '#A8786E', '#ED97CA', '#A2A2A2', '#CDCC5D', '#6DCCDA'] },
+  { name: 'Classic Light', colors: ['#AEC7E8', '#FFBB78', '#98DF8A', '#FF9896', '#C5B0D5', '#C49C94', '#F7B6D2', '#C7C7C7', '#DBDB8D', '#9EDAE5'] },
+  { name: 'Seattle Grays', colors: ['#767F8B', '#B3B7B8', '#5B6770', '#D0D7DC', '#4C5460'] },
+  { name: 'Traffic', colors: ['#B60A1C', '#E39802', '#309143', '#E03531', '#F0BD27', '#51B364', '#E8A29A', '#F6D37E', '#9BCB91'] },
+  { name: 'Superfishel Stone', colors: ['#6388B4', '#FFAE34', '#EF6F6A', '#8CC2CA', '#55AD89', '#C3BC3F', '#BB7693', '#BAA094', '#A9B5AE', '#767676'] },
+  { name: 'Jewel Bright', colors: ['#EB1E2C', '#FD6F30', '#F9A729', '#F9D23C', '#5FBB68', '#64CDCC', '#91DCEA', '#A4A4D5', '#BBC9E5'] },
 ];
 
-const COLOR_THEMES: { name: string; colors: string[] }[] = [
-  { name: 'Default', colors: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#6366f1'] },
-  { name: 'Ocean', colors: ['#0ea5e9', '#06b6d4', '#14b8a6', '#0d9488', '#0891b2', '#0284c7', '#0369a1', '#155e75', '#164e63', '#1e3a5f'] },
-  { name: 'Sunset', colors: ['#f97316', '#ef4444', '#ec4899', '#f59e0b', '#e11d48', '#f43f5e', '#fb923c', '#fbbf24', '#dc2626', '#db2777'] },
-  { name: 'Forest', colors: ['#22c55e', '#16a34a', '#15803d', '#4ade80', '#86efac', '#065f46', '#10b981', '#059669', '#047857', '#166534'] },
-  { name: 'Purple', colors: ['#8b5cf6', '#7c3aed', '#6d28d9', '#a78bfa', '#c4b5fd', '#6366f1', '#4f46e5', '#4338ca', '#d946ef', '#a855f7'] },
-  { name: 'Pastel', colors: ['#93c5fd', '#86efac', '#fde68a', '#fca5a5', '#c4b5fd', '#fbcfe8', '#a5f3fc', '#fed7aa', '#99f6e4', '#a5b4fc'] },
-  { name: 'Neon', colors: ['#00ff87', '#00d4ff', '#ff00e5', '#ffee00', '#ff6b00', '#00ffcc', '#7b61ff', '#ff3d71', '#00e5ff', '#b2ff59'] },
-  { name: 'Earth', colors: ['#92400e', '#b45309', '#a16207', '#854d0e', '#78716c', '#6d4c41', '#8d6e63', '#a1887f', '#bcaaa4', '#d7ccc8'] },
-  { name: 'Monochrome', colors: ['#1f2937', '#374151', '#4b5563', '#6b7280', '#9ca3af', '#d1d5db', '#111827', '#334155', '#475569', '#64748b'] },
-];
+const DEFAULT_COLORS = COLOR_THEMES[0].colors;
 
 const CHART_TYPES = [
   { value: 'bar', label: 'Bar' },
