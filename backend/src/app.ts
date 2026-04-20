@@ -13,12 +13,26 @@ export const createApp = (): Application => {
   // Security middleware
   app.use(helmet());
 
-  // CORS configuration
+  // CORS configuration — FRONTEND_URL may be a comma-separated list of origins.
+  const allowedOrigins =
+    config.nodeEnv === 'development'
+      ? ['http://localhost:5173', 'http://localhost:3001']
+      : (process.env.FRONTEND_URL ?? '')
+          .split(',')
+          .map((o) => o.trim())
+          .filter(Boolean);
+
+  if (config.nodeEnv !== 'development' && allowedOrigins.length === 0) {
+    logger.warn('FRONTEND_URL is not set — cross-origin browser requests will fail.');
+  }
+
   app.use(
     cors({
-      origin: config.nodeEnv === 'development'
-        ? ['http://localhost:5173', 'http://localhost:3001']
-        : process.env.FRONTEND_URL,
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true); // curl, server-to-server
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error(`Origin ${origin} not allowed by CORS`));
+      },
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
       allowedHeaders: ['Content-Type', 'Authorization'],
     })
