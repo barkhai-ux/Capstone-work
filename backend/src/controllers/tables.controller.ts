@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { asyncHandler } from '../middleware/error-handler.js';
 import { sendSuccess, sendNotFound, sendBadRequest } from '../utils/response.js';
 import { duckdbService } from '../services/duckdb.service.js';
+import { userTablesService } from '../services/user-tables.service.js';
 import { tableIdSchema, getTableDataSchema } from '../services/validation.service.js';
 import logger from '../utils/logger.js';
 
@@ -66,6 +67,8 @@ export const deleteTable = asyncHandler(async (req: Request, res: Response) => {
   if (!deleted) {
     return sendNotFound(res, 'Table not found');
   }
+
+  await userTablesService.remove(tableId).catch(() => { /* best-effort cleanup */ });
 
   logger.info(`Table deleted: ${tableId}`);
 

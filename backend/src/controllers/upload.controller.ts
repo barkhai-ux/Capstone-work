@@ -7,6 +7,7 @@ import { sendSuccess, sendCreated, sendBadRequest, sendNotFound } from '../utils
 import { fileParserService } from '../services/file-parser.service.js';
 import { schemaDetectorService } from '../services/schema-detector.service.js';
 import { duckdbService } from '../services/duckdb.service.js';
+import { userTablesService } from '../services/user-tables.service.js';
 import { uploadFileSchema, fileIdSchema } from '../services/validation.service.js';
 import { config, getAbsolutePath } from '../config/index.js';
 import { FilePreview } from '../types/index.js';
@@ -111,7 +112,11 @@ export const commitUpload = asyncHandler(async (req: Request, res: Response) => 
     return sendNotFound(res, 'File preview not found. It may have expired.');
   }
 
-  const { tableName } = req.body;
+  const { tableName, databaseId } = req.body as { tableName?: string; databaseId?: string };
+  if (!databaseId || typeof databaseId !== 'string') {
+    return sendBadRequest(res, 'databaseId is required');
+  }
+
   const finalTableName =
     tableName || schemaDetectorService.sanitizeTableName(preview.fileName);
 
@@ -130,17 +135,36 @@ export const commitUpload = asyncHandler(async (req: Request, res: Response) => 
       await duckdbService.createTableFromData(finalTableName, preview.schema, parseResult.data);
     }
 
-    // Register table in metadata
+    // Register table in metadata, scoped to the active database
     const tableId = uuidv4();
-    await duckdbService.registerTable(tableId, finalTableName, preview.fileName);
+    await duckdbService.registerTable(tableId, finalTableName, preview.fileName, databaseId);
+
+    const tableInfo = await duckdbService.getTableById(tableId);
+
+    // Back up the original file to Supabase Storage and persist metadata
+    // before we delete the local copy.
+    try {
+      await userTablesService.createOnUpload({
+        tableId,
+        databaseId,
+        name: finalTableName,
+        originalFile: preview.fileName,
+        filePath: preview.filePath,
+        rowCount: tableInfo?.rowCount ?? 0,
+        columnCount: tableInfo?.columnCount ?? 0,
+      });
+    } catch (err) {
+      // Roll back the DuckDB table so we don't leak a row that can't be
+      // recovered after a server restart.
+      await duckdbService.deleteTable(tableId).catch(() => {});
+      throw err;
+    }
 
     // Clean up
     filePreviews.delete(fileId);
     if (fs.existsSync(preview.filePath)) {
       fs.unlinkSync(preview.filePath);
     }
-
-    const tableInfo = await duckdbService.getTableById(tableId);
 
     logger.info(`Table created: ${finalTableName}, tableId: ${tableId}`);
 

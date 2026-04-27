@@ -1,48 +1,80 @@
 import { DuckDBInstance, DuckDBConnection, DuckDBValue } from '@duckdb/node-api';
 import fs from 'fs';
+import path from 'path';
 import { config, getAbsolutePath } from '../config/index.js';
 import logger from '../utils/logger.js';
 import { TableInfo, PaginatedData, ColumnSchema } from '../types/index.js';
+import { getCurrentUserId, getCurrentDatabaseId } from '../middleware/auth.js';
 
 type Params = Record<string, DuckDBValue>;
 
+interface UserDb {
+  instance: DuckDBInstance;
+  connection: DuckDBConnection;
+}
+
+// One DuckDB file per user. Located at  data/users/<userId>.duckdb .
+// This naturally isolates each user's data without needing to rewrite every
+// service to thread a userId argument through the call stack.
 class DuckDBService {
-  private instance: DuckDBInstance | null = null;
-  private connection: DuckDBConnection | null = null;
-  private initialized = false;
+  private dbs = new Map<string, UserDb>();
 
-  async initialize(): Promise<void> {
-    if (this.initialized) return;
+  private getUsersDir(): string {
+    const baseDir = getAbsolutePath(path.dirname(config.dbPath));
+    return path.join(baseDir, 'users');
+  }
 
-    const dbPath = getAbsolutePath(config.dbPath);
-    logger.info(`Initializing DuckDB at: ${dbPath}`);
+  private async openForUser(userId: string): Promise<UserDb> {
+    const cached = this.dbs.get(userId);
+    if (cached) return cached;
 
-    this.instance = await DuckDBInstance.create(dbPath);
-    this.connection = await this.instance.connect();
+    const usersDir = this.getUsersDir();
+    if (!fs.existsSync(usersDir)) fs.mkdirSync(usersDir, { recursive: true });
 
-    // Create metadata table if not exists
-    await this.run(`
+    const dbPath = path.join(usersDir, `${userId}.duckdb`);
+    logger.info(`Opening DuckDB for user ${userId} at: ${dbPath}`);
+
+    const instance = await DuckDBInstance.create(dbPath);
+    const connection = await instance.connect();
+    const db: UserDb = { instance, connection };
+    this.dbs.set(userId, db);
+
+    // Bootstrap metadata table.
+    await connection.run(`
       CREATE TABLE IF NOT EXISTS _table_metadata (
         id VARCHAR PRIMARY KEY,
         name VARCHAR NOT NULL UNIQUE,
         original_file VARCHAR,
+        database_id VARCHAR,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
-    this.initialized = true;
-    logger.info('DuckDB initialized successfully');
+    // Migration: add database_id to existing _table_metadata if it predates
+    // the multi-database feature. DuckDB's IF NOT EXISTS is idempotent.
+    try {
+      await connection.run(`ALTER TABLE _table_metadata ADD COLUMN IF NOT EXISTS database_id VARCHAR`);
+    } catch { /* DuckDB version that lacks IF NOT EXISTS — ignore if column exists */ }
+
+    return db;
   }
 
-  private getConnection(): DuckDBConnection {
-    if (!this.connection) {
-      throw new Error('DuckDB not initialized. Call initialize() first.');
-    }
-    return this.connection;
+  // Kept for backwards compat with existing startup code. Now a no-op —
+  // per-user databases are opened lazily on first request.
+  async initialize(): Promise<void> {
+    const usersDir = this.getUsersDir();
+    if (!fs.existsSync(usersDir)) fs.mkdirSync(usersDir, { recursive: true });
+    logger.info('DuckDB service ready (per-user databases will open on demand)');
+  }
+
+  private async getConnection(): Promise<DuckDBConnection> {
+    const userId = getCurrentUserId();
+    const db = await this.openForUser(userId);
+    return db.connection;
   }
 
   async run(sql: string, params?: Params): Promise<void> {
-    const conn = this.getConnection();
+    const conn = await this.getConnection();
     if (params) {
       await conn.run(sql, params);
     } else {
@@ -51,7 +83,7 @@ class DuckDBService {
   }
 
   async all<T = Record<string, unknown>>(sql: string, params?: Params): Promise<T[]> {
-    const conn = this.getConnection();
+    const conn = await this.getConnection();
     const reader = params
       ? await conn.runAndReadAll(sql, params)
       : await conn.runAndReadAll(sql);
@@ -84,16 +116,14 @@ class DuckDBService {
     columns: ColumnSchema[],
     data: Record<string, unknown>[]
   ): Promise<void> {
-    const conn = this.getConnection();
+    const conn = await this.getConnection();
 
-    // Generate CREATE TABLE SQL
     const columnDefs = columns
       .map((col) => `"${col.name}" ${col.type}`)
       .join(', ');
 
     await conn.run(`CREATE TABLE "${tableName}" (${columnDefs})`);
 
-    // Insert data in batches
     if (data.length > 0) {
       const colNames = columns.map((c) => `"${c.name}"`).join(', ');
       const placeholders = columns.map((_, i) => `$${i + 1}`).join(', ');
@@ -113,17 +143,34 @@ class DuckDBService {
     logger.info(`Created table ${tableName} with ${data.length} rows`);
   }
 
-  async registerTable(id: string, name: string, originalFile?: string): Promise<void> {
+  async registerTable(
+    id: string,
+    name: string,
+    originalFile?: string,
+    databaseId?: string
+  ): Promise<void> {
     await this.run(
-      `INSERT INTO _table_metadata (id, name, original_file) VALUES ($1, $2, $3)`,
-      { '1': id, '2': name, '3': originalFile || null }
+      `INSERT INTO _table_metadata (id, name, original_file, database_id) VALUES ($1, $2, $3, $4)`,
+      {
+        '1': id,
+        '2': name,
+        '3': originalFile || null,
+        '4': databaseId || null,
+      }
     );
   }
 
+  /** List tables, scoped to the current database when one is set in context. */
   async listTables(): Promise<TableInfo[]> {
-    const tables = await this.all<{ id: string; name: string; created_at: string }>(
-      `SELECT id, name, created_at FROM _table_metadata ORDER BY created_at DESC`
-    );
+    const databaseId = getCurrentDatabaseId();
+    const tables = databaseId
+      ? await this.all<{ id: string; name: string; created_at: string }>(
+          `SELECT id, name, created_at FROM _table_metadata WHERE database_id = $1 ORDER BY created_at DESC`,
+          { '1': databaseId }
+        )
+      : await this.all<{ id: string; name: string; created_at: string }>(
+          `SELECT id, name, created_at FROM _table_metadata ORDER BY created_at DESC`
+        );
 
     const result: TableInfo[] = [];
 
@@ -251,6 +298,21 @@ class DuckDBService {
     };
   }
 
+  /** Drop every table belonging to the given database id and remove their metadata. */
+  async deleteTablesForDatabase(databaseId: string): Promise<string[]> {
+    const tables = await this.all<{ id: string; name: string }>(
+      `SELECT id, name FROM _table_metadata WHERE database_id = $1`,
+      { '1': databaseId }
+    );
+    for (const t of tables) {
+      try { await this.run(`DROP TABLE IF EXISTS "${t.name}"`); } catch { /* swallow */ }
+    }
+    if (tables.length > 0) {
+      await this.run(`DELETE FROM _table_metadata WHERE database_id = $1`, { '1': databaseId });
+    }
+    return tables.map(t => t.id);
+  }
+
   async deleteTable(tableId: string): Promise<boolean> {
     const table = await this.getTableById(tableId);
     if (!table) return false;
@@ -294,7 +356,6 @@ class DuckDBService {
    * A column qualifies if its unique count equals the number of distinct
    * combinations of all columns in the group — meaning it alone can
    * uniquely identify each row in the dimension.
-   * Works regardless of column naming or language.
    */
   async findNaturalKey(
     tableName: string,
@@ -302,7 +363,6 @@ class DuckDBService {
   ): Promise<string | null> {
     if (columns.length <= 1) return null;
 
-    // Count distinct combinations of all columns in the group
     const allCols = columns.map(c => `"${c}"`).join(', ');
     const distinctResult = await this.all<{ count: bigint }>(
       `SELECT COUNT(*) as count FROM (SELECT DISTINCT ${allCols} FROM "${tableName}")`
@@ -310,8 +370,6 @@ class DuckDBService {
     const distinctCombinations = Number(distinctResult[0]?.count || 0);
     if (distinctCombinations === 0) return null;
 
-    // Check each column: if its distinct count matches the group's distinct count,
-    // it can uniquely identify each dimension row
     for (const col of columns) {
       const colResult = await this.all<{ count: bigint }>(
         `SELECT COUNT(DISTINCT "${col}") as count FROM "${tableName}" WHERE "${col}" IS NOT NULL`
@@ -334,15 +392,11 @@ class DuckDBService {
   }
 
   async close(): Promise<void> {
-    if (this.connection) {
-      this.connection.closeSync();
-      this.connection = null;
+    for (const [, db] of this.dbs) {
+      try { db.connection.closeSync(); } catch { /* noop */ }
     }
-    if (this.instance) {
-      this.instance = null;
-    }
-    this.initialized = false;
-    logger.info('DuckDB connection closed');
+    this.dbs.clear();
+    logger.info('DuckDB connections closed');
   }
 }
 

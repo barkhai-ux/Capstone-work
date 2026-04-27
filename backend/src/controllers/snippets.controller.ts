@@ -1,136 +1,97 @@
 import { Request, Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import { asyncHandler } from '../middleware/error-handler.js';
 import { sendSuccess, sendCreated, sendBadRequest, sendNotFound } from '../utils/response.js';
-import { duckdbService } from '../services/duckdb.service.js';
+import { supabaseAdmin } from '../services/supabase.service.js';
+import { getCurrentUserId } from '../middleware/auth.js';
 import { saveSnippetSchema, snippetIdSchema } from '../services/validation.service.js';
 import logger from '../utils/logger.js';
 
-// Ensure snippets table exists
-async function ensureSnippetsTable(): Promise<void> {
-  await duckdbService.run(`
-    CREATE TABLE IF NOT EXISTS _saved_snippets (
-      id VARCHAR PRIMARY KEY,
-      name VARCHAR NOT NULL,
-      question VARCHAR NOT NULL,
-      columns_json VARCHAR NOT NULL,
-      rows_json VARCHAR NOT NULL,
-      row_count INTEGER NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-}
+export const listSnippets = asyncHandler(async (_req: Request, res: Response) => {
+  const userId = getCurrentUserId();
+  const { data, error } = await supabaseAdmin
+    .from('snippets')
+    .select('id, name, question, row_count, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
 
-export const listSnippets = asyncHandler(
-  async (_req: Request, res: Response) => {
-    await ensureSnippetsTable();
-    const snippets = await duckdbService.all<{
-      id: string;
-      name: string;
-      question: string;
-      row_count: number;
-      created_at: string;
-    }>(`SELECT id, name, question, row_count, created_at FROM _saved_snippets ORDER BY created_at DESC`);
+  if (error) return sendBadRequest(res, error.message);
 
-    return sendSuccess(res, {
-      snippets: snippets.map(s => ({
-        id: s.id,
-        name: s.name,
-        question: s.question,
-        rowCount: Number(s.row_count),
-        createdAt: String(s.created_at),
-      })),
-    });
-  }
-);
-
-export const getSnippet = asyncHandler(
-  async (req: Request, res: Response) => {
-    const validation = snippetIdSchema.safeParse(req.params);
-    if (!validation.success) {
-      return sendBadRequest(res, validation.error.message);
-    }
-
-    await ensureSnippetsTable();
-    const rows = await duckdbService.all<{
-      id: string;
-      name: string;
-      question: string;
-      columns_json: string;
-      rows_json: string;
-      row_count: number;
-      created_at: string;
-    }>(`SELECT * FROM _saved_snippets WHERE id = $1`, { '1': validation.data.snippetId });
-
-    if (rows.length === 0) {
-      return sendNotFound(res);
-    }
-
-    const s = rows[0];
-    return sendSuccess(res, {
+  return sendSuccess(res, {
+    snippets: (data ?? []).map((s) => ({
       id: s.id,
       name: s.name,
       question: s.question,
-      columns: JSON.parse(s.columns_json),
-      rows: JSON.parse(s.rows_json),
       rowCount: Number(s.row_count),
       createdAt: String(s.created_at),
-    });
-  }
-);
+    })),
+  });
+});
 
-export const saveSnippet = asyncHandler(
-  async (req: Request, res: Response) => {
-    const validation = saveSnippetSchema.safeParse(req.body);
-    if (!validation.success) {
-      return sendBadRequest(res, validation.error.message);
-    }
+export const getSnippet = asyncHandler(async (req: Request, res: Response) => {
+  const validation = snippetIdSchema.safeParse(req.params);
+  if (!validation.success) return sendBadRequest(res, validation.error.message);
 
-    const { name, question, columns, rows } = validation.data;
-    const id = uuidv4();
+  const userId = getCurrentUserId();
+  const { data, error } = await supabaseAdmin
+    .from('snippets')
+    .select('id, name, question, columns, rows, row_count, created_at')
+    .eq('user_id', userId)
+    .eq('id', validation.data.snippetId)
+    .maybeSingle();
 
-    await ensureSnippetsTable();
-    await duckdbService.run(
-      `INSERT INTO _saved_snippets (id, name, question, columns_json, rows_json, row_count) VALUES ($1, $2, $3, $4, $5, $6)`,
-      {
-        '1': id,
-        '2': name,
-        '3': question,
-        '4': JSON.stringify(columns),
-        '5': JSON.stringify(rows),
-        '6': rows.length,
-      }
-    );
+  if (error) return sendBadRequest(res, error.message);
+  if (!data) return sendNotFound(res);
 
-    logger.info(`Saved snippet: "${name}" (${rows.length} rows)`);
+  return sendSuccess(res, {
+    id: data.id,
+    name: data.name,
+    question: data.question,
+    columns: data.columns,
+    rows: data.rows,
+    rowCount: Number(data.row_count),
+    createdAt: String(data.created_at),
+  });
+});
 
-    return sendCreated(res, { id, name, rowCount: rows.length });
-  }
-);
+export const saveSnippet = asyncHandler(async (req: Request, res: Response) => {
+  const validation = saveSnippetSchema.safeParse(req.body);
+  if (!validation.success) return sendBadRequest(res, validation.error.message);
 
-export const deleteSnippet = asyncHandler(
-  async (req: Request, res: Response) => {
-    const validation = snippetIdSchema.safeParse(req.params);
-    if (!validation.success) {
-      return sendBadRequest(res, validation.error.message);
-    }
+  const { name, question, columns, rows } = validation.data;
+  const userId = getCurrentUserId();
 
-    await ensureSnippetsTable();
-    const rows = await duckdbService.all<{ id: string }>(
-      `SELECT id FROM _saved_snippets WHERE id = $1`,
-      { '1': validation.data.snippetId }
-    );
+  const { data, error } = await supabaseAdmin
+    .from('snippets')
+    .insert({
+      user_id: userId,
+      name,
+      question,
+      columns,
+      rows,
+      row_count: rows.length,
+    })
+    .select('id, name, row_count')
+    .single();
 
-    if (rows.length === 0) {
-      return sendNotFound(res);
-    }
+  if (error) return sendBadRequest(res, error.message);
 
-    await duckdbService.run(
-      `DELETE FROM _saved_snippets WHERE id = $1`,
-      { '1': validation.data.snippetId }
-    );
+  logger.info(`Saved snippet: "${name}" (${rows.length} rows)`);
+  return sendCreated(res, { id: data.id, name: data.name, rowCount: Number(data.row_count) });
+});
 
-    logger.info(`Deleted snippet: ${validation.data.snippetId}`);
-    return sendSuccess(res, { deleted: true });
-  }
-);
+export const deleteSnippet = asyncHandler(async (req: Request, res: Response) => {
+  const validation = snippetIdSchema.safeParse(req.params);
+  if (!validation.success) return sendBadRequest(res, validation.error.message);
+
+  const userId = getCurrentUserId();
+  const { error } = await supabaseAdmin
+    .from('snippets')
+    .delete()
+    .eq('user_id', userId)
+    .eq('id', validation.data.snippetId);
+
+  if (error) return sendBadRequest(res, error.message);
+
+  logger.info(`Deleted snippet: ${validation.data.snippetId}`);
+  return sendSuccess(res, { deleted: true });
+});

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api, TableInfo } from './api';
+import { api, TableInfo, DatabaseRecord, setActiveDatabaseId } from './api';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import TableGrid from './components/TableGrid';
@@ -7,7 +7,9 @@ import AskData from './components/AskData';
 import UploadModal from './components/UploadModal';
 import NormalizationModal from './components/NormalizationModal';
 import StarSchemaModal from './components/StarSchemaModal';
+import AuthPage from './components/AuthPage';
 import { Toast, ToastState } from './components/Toast';
+import { useAuth } from './auth';
 
 interface ModalState {
   type: 'upload' | 'normalize' | 'star-schema' | null;
@@ -16,6 +18,9 @@ interface ModalState {
 }
 
 export default function App() {
+  const { session, loading: authLoading } = useAuth();
+  const [databases, setDatabases] = useState<DatabaseRecord[]>([]);
+  const [activeDbId, setActiveDbId] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -31,14 +36,67 @@ export default function App() {
       setTables(res.data);
       return res.data;
     }
+    setTables([]);
     return [];
   }, []);
 
+  // Whenever the active database changes, mirror it into api.ts so every
+  // request carries the X-Database-Id header.
   useEffect(() => {
+    setActiveDatabaseId(activeDbId);
+  }, [activeDbId]);
+
+  // On sign-in: load databases (auto-creating a default if needed) and pick
+  // the first one. On sign-out: clear everything.
+  useEffect(() => {
+    if (!session) {
+      setDatabases([]);
+      setActiveDbId(null);
+      setTables([]);
+      setSelectedId(null);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const res = await api.listDatabases();
+      if (cancelled) return;
+      if (res.success && res.data) {
+        setDatabases(res.data.databases);
+        const first = res.data.databases[0]?.id ?? res.data.defaultDatabaseId;
+        setActiveDbId(first ?? null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session]);
+
+  // Reload the table list whenever the active database changes.
+  useEffect(() => {
+    if (!session || !activeDbId) {
+      setTables([]);
+      setSelectedId(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     loadTables().finally(() => setLoading(false));
-  }, []);
+  }, [session, activeDbId, loadTables]);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 text-sm text-gray-400">
+        Loading…
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <AuthPage />;
+  }
 
   const selectedTable = tables.find((t) => t.id === selectedId) ?? null;
+  const activeDatabase = databases.find((d) => d.id === activeDbId) ?? null;
 
   const handleImportSuccess = async () => {
     setModal({ type: null });
@@ -63,7 +121,6 @@ export default function App() {
 
   const handleApplied = async () => {
     const t = await loadTables();
-    // Keep selection if table still exists, else select first
     if (!t.find((tb) => tb.id === selectedId)) {
       setSelectedId(t[0]?.id ?? null);
     }
@@ -79,9 +136,64 @@ export default function App() {
     if (t) setModal({ type: 'star-schema', tableId: id, tableName: t.name });
   };
 
+  const handleSelectDatabase = (id: string) => {
+    setActiveDbId(id);
+    setSelectedId(null);
+    setView('dashboard');
+  };
+
+  const handleCreateDatabase = async () => {
+    const name = window.prompt('Name your new database:')?.trim();
+    if (!name) return;
+    const res = await api.createDatabase(name);
+    if (res.success && res.data) {
+      setDatabases((prev) => [...prev, res.data!]);
+      setActiveDbId(res.data.id);
+      showToast(`Created "${res.data.name}"`);
+    } else {
+      showToast(res.error ?? 'Could not create database', 'error');
+    }
+  };
+
+  const handleRenameDatabase = async (id: string) => {
+    const current = databases.find((d) => d.id === id);
+    if (!current) return;
+    const name = window.prompt('Rename database:', current.name)?.trim();
+    if (!name || name === current.name) return;
+    const res = await api.renameDatabase(id, name);
+    if (res.success && res.data) {
+      setDatabases((prev) => prev.map((d) => (d.id === id ? res.data! : d)));
+      showToast('Renamed');
+    } else {
+      showToast(res.error ?? 'Could not rename', 'error');
+    }
+  };
+
+  const handleDeleteDatabase = async (id: string) => {
+    const current = databases.find((d) => d.id === id);
+    if (!current) return;
+    if (!confirm(`Delete database "${current.name}" and all its tables? This cannot be undone.`)) return;
+    const res = await api.deleteDatabase(id);
+    if (!res.success) {
+      showToast(res.error ?? 'Could not delete', 'error');
+      return;
+    }
+    setDatabases((prev) => {
+      const next = prev.filter((d) => d.id !== id);
+      if (activeDbId === id) {
+        setActiveDbId(next[0]?.id ?? null);
+        setSelectedId(null);
+      }
+      return next;
+    });
+    showToast('Database deleted');
+  };
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar
+        databases={databases}
+        activeDatabaseId={activeDbId}
         tables={tables}
         selectedId={selectedId}
         view={view}
@@ -92,6 +204,10 @@ export default function App() {
         onDelete={handleDelete}
         onNormalize={openNormalize}
         onStarSchema={openStarSchema}
+        onSelectDatabase={handleSelectDatabase}
+        onCreateDatabase={handleCreateDatabase}
+        onRenameDatabase={handleRenameDatabase}
+        onDeleteDatabase={handleDeleteDatabase}
       />
 
       {/* Main Content */}
@@ -122,6 +238,8 @@ export default function App() {
         open={modal.type === 'upload'}
         onClose={() => setModal({ type: null })}
         onSuccess={handleImportSuccess}
+        databaseId={activeDbId}
+        databaseName={activeDatabase?.name}
       />
 
       {modal.type === 'normalize' && modal.tableId && modal.tableName && (

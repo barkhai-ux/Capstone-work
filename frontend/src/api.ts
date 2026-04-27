@@ -1,4 +1,23 @@
+import { supabase } from './supabase';
+
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
+
+// Attach the current Supabase access token (if any) as a Bearer auth header,
+// plus the active database id when one has been selected by the user.
+let activeDatabaseId: string | null = null;
+
+export function setActiveDatabaseId(id: string | null): void {
+  activeDatabaseId = id;
+}
+
+async function withAuth(init?: RequestInit): Promise<RequestInit> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const headers = new Headers(init?.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  if (activeDatabaseId) headers.set('X-Database-Id', activeDatabaseId);
+  return { ...init, headers };
+}
 
 // ── Shared types ──
 
@@ -126,6 +145,26 @@ export interface QueryResult {
   insight?: string;
 }
 
+// ── Database (workspace) types ──
+
+export interface DatabaseRecord {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Dashboard types ──
+
+export interface DashboardRecord {
+  id: string;
+  name: string;
+  widgets: unknown[];
+  layouts: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 // ── Snippet types ──
 
 export interface SnippetSummary {
@@ -150,10 +189,11 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 async function request<T>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
   let attempt = 0;
+  const authedOptions = await withAuth(options);
   while (true) {
     let res: Response;
     try {
-      res = await fetch(url, options);
+      res = await fetch(url, authedOptions);
     } catch (err) {
       if (attempt < COLD_START_MAX_RETRIES) {
         await sleep(COLD_START_BASE_DELAY_MS * Math.pow(2, attempt));
@@ -217,11 +257,11 @@ export const api = {
     return json as unknown as ApiResponse<UploadPreview>;
   },
 
-  async commitUpload(fileId: string, tableName?: string): Promise<ApiResponse<{ tableId: string; tableName: string; columnCount: number; rowCount: number }>> {
+  async commitUpload(fileId: string, opts: { tableName?: string; databaseId: string }): Promise<ApiResponse<{ tableId: string; tableName: string; columnCount: number; rowCount: number }>> {
     return request(`${API_BASE}/upload/commit/${fileId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tableName }),
+      body: JSON.stringify(opts),
     });
   },
 
@@ -370,5 +410,67 @@ export const api = {
 
   deleteSnippet(snippetId: string): Promise<ApiResponse<{ deleted: boolean }>> {
     return request(`${API_BASE}/snippets/${snippetId}`, { method: 'DELETE' });
+  },
+
+  // Dashboards
+  async listDashboards(): Promise<ApiResponse<DashboardRecord[]>> {
+    const json = await request<{ dashboards: DashboardRecord[] }>(`${API_BASE}/dashboards`);
+    if (json.success && json.data?.dashboards) {
+      return { ...json, data: json.data.dashboards };
+    }
+    return json as unknown as ApiResponse<DashboardRecord[]>;
+  },
+
+  async createDashboard(payload: { id?: string; name: string; widgets: unknown[]; layouts: Record<string, unknown> }): Promise<ApiResponse<DashboardRecord>> {
+    const json = await request<{ dashboard: DashboardRecord }>(`${API_BASE}/dashboards`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (json.success && json.data?.dashboard) return { ...json, data: json.data.dashboard };
+    return json as unknown as ApiResponse<DashboardRecord>;
+  },
+
+  async updateDashboard(id: string, payload: Partial<{ name: string; widgets: unknown[]; layouts: Record<string, unknown> }>): Promise<ApiResponse<DashboardRecord>> {
+    const json = await request<{ dashboard: DashboardRecord }>(`${API_BASE}/dashboards/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (json.success && json.data?.dashboard) return { ...json, data: json.data.dashboard };
+    return json as unknown as ApiResponse<DashboardRecord>;
+  },
+
+  deleteDashboard(id: string): Promise<ApiResponse<{ deleted: boolean }>> {
+    return request(`${API_BASE}/dashboards/${id}`, { method: 'DELETE' });
+  },
+
+  // Databases (user-named workspaces)
+  async listDatabases(): Promise<ApiResponse<{ databases: DatabaseRecord[]; defaultDatabaseId: string }>> {
+    return request(`${API_BASE}/databases`);
+  },
+
+  async createDatabase(name: string): Promise<ApiResponse<DatabaseRecord>> {
+    const json = await request<{ database: DatabaseRecord }>(`${API_BASE}/databases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (json.success && json.data?.database) return { ...json, data: json.data.database };
+    return json as unknown as ApiResponse<DatabaseRecord>;
+  },
+
+  async renameDatabase(id: string, name: string): Promise<ApiResponse<DatabaseRecord>> {
+    const json = await request<{ database: DatabaseRecord }>(`${API_BASE}/databases/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (json.success && json.data?.database) return { ...json, data: json.data.database };
+    return json as unknown as ApiResponse<DatabaseRecord>;
+  },
+
+  deleteDatabase(id: string): Promise<ApiResponse<{ deleted: boolean }>> {
+    return request(`${API_BASE}/databases/${id}`, { method: 'DELETE' });
   },
 };

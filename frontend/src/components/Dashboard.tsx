@@ -7,7 +7,7 @@ import {
 import { Bar, Pie, Doughnut, Line, Scatter, Radar, PolarArea } from 'react-chartjs-2';
 import { GridLayout, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
-import { api, TableInfo } from '../api';
+import { api, TableInfo, DashboardRecord } from '../api';
 import ConfirmDialog from './ConfirmDialog';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, RadialLinearScale, Title, Tooltip, Legend, Filler);
@@ -160,7 +160,7 @@ interface DashboardProps {
   onImport: () => void;
 }
 
-// ── Multi-dashboard persistence ──
+// ── Multi-dashboard persistence (Supabase-backed via /api/v1/dashboards) ──
 
 interface DashboardInstance {
   id: string;
@@ -170,48 +170,59 @@ interface DashboardInstance {
   createdAt: string;
 }
 
-const DASHBOARDS_KEY = 'dashboard_instances';
+const LEGACY_DASHBOARDS_KEY = 'dashboard_instances';
 
-function loadDashboards(): DashboardInstance[] {
-  try {
-    const raw = localStorage.getItem(DASHBOARDS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+function recordToInstance(rec: DashboardRecord): DashboardInstance {
+  return {
+    id: rec.id,
+    name: rec.name,
+    widgets: (rec.widgets ?? []) as WidgetConfig[],
+    layouts: (rec.layouts ?? {}) as Record<string, WidgetLayout>,
+    createdAt: rec.created_at,
+  };
 }
 
-function saveDashboards(dashboards: DashboardInstance[]) {
-  localStorage.setItem(DASHBOARDS_KEY, JSON.stringify(dashboards));
-}
-
-function migrateIfNeeded(): DashboardInstance[] {
-  const existing = loadDashboards();
-  if (existing.length > 0) return existing;
-
-  let legacyWidgets: WidgetConfig[] = [];
-  let legacyLayouts: Record<string, WidgetLayout> = {};
+// One-time migration: pull anything still sitting in localStorage from the
+// pre-Supabase build and push it up to the user's account.
+async function migrateLocalToSupabase(): Promise<void> {
+  let legacy: DashboardInstance[] = [];
   try {
-    legacyWidgets = JSON.parse(localStorage.getItem('dashboard_widgets') ?? '[]');
-    legacyLayouts = JSON.parse(localStorage.getItem('dashboard_layouts') ?? '{}');
+    const raw = localStorage.getItem(LEGACY_DASHBOARDS_KEY);
+    if (raw) legacy = JSON.parse(raw);
   } catch { /* ignore */ }
 
-  if (legacyWidgets.length === 0) return [];
+  if (legacy.length === 0) {
+    // Older legacy: a single dashboard kept as widgets/layouts at the top level.
+    try {
+      const w = JSON.parse(localStorage.getItem('dashboard_widgets') ?? '[]');
+      const l = JSON.parse(localStorage.getItem('dashboard_layouts') ?? '{}');
+      if (Array.isArray(w) && w.length > 0) {
+        legacy = [{
+          id: crypto.randomUUID(),
+          name: 'My Dashboard',
+          widgets: w,
+          layouts: l,
+          createdAt: new Date().toISOString(),
+        }];
+      }
+    } catch { /* ignore */ }
+  }
 
-  const migrated: DashboardInstance = {
-    id: crypto.randomUUID(),
-    name: 'My Dashboard',
-    widgets: legacyWidgets,
-    layouts: legacyLayouts,
-    createdAt: new Date().toISOString(),
-  };
+  if (legacy.length === 0) return;
 
-  const dashboards = [migrated];
-  saveDashboards(dashboards);
+  for (const d of legacy) {
+    await api.createDashboard({
+      id: d.id,
+      name: d.name,
+      widgets: d.widgets,
+      layouts: d.layouts,
+    });
+  }
+
+  // Clear local copies so we don't migrate twice.
+  localStorage.removeItem(LEGACY_DASHBOARDS_KEY);
   localStorage.removeItem('dashboard_widgets');
   localStorage.removeItem('dashboard_layouts');
-
-  return dashboards;
 }
 
 function resolveValue(v: unknown): number | null {
@@ -1721,18 +1732,67 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
 // ── Dashboard ──
 
 export default function Dashboard({ tables, onImport }: DashboardProps) {
-  const [dashboards, setDashboards] = useState<DashboardInstance[]>(migrateIfNeeded);
+  const [dashboards, setDashboards] = useState<DashboardInstance[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editing, setEditing] = useState<WidgetConfig | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [canvasWidth, setCanvasWidth] = useState(800);
 
+  // Tracks which dashboard ids have already been pushed to Supabase so we know
+  // whether to POST (create) or PUT (update) on the next save.
+  const persistedIdsRef = useRef<Set<string>>(new Set());
+  // Per-dashboard debounce timers for save bursts (drag, resize, edit).
+  const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Skip pushing changes back to the server during the initial hydration.
+  const hydratedRef = useRef(false);
+
   const activeDashboard = dashboards.find(d => d.id === activeId) ?? null;
   const widgets = activeDashboard?.widgets ?? [];
   const layouts = activeDashboard?.layouts ?? {};
 
+  // Initial load: migrate any legacy localStorage entries, then fetch the
+  // user's dashboards from Supabase.
   useEffect(() => {
-    saveDashboards(dashboards);
+    let cancelled = false;
+    (async () => {
+      try { await migrateLocalToSupabase(); } catch { /* non-fatal */ }
+      const res = await api.listDashboards();
+      if (cancelled) return;
+      if (res.success && res.data) {
+        const list = res.data.map(recordToInstance);
+        persistedIdsRef.current = new Set(list.map(d => d.id));
+        setDashboards(list);
+      }
+      hydratedRef.current = true;
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Debounced save: whenever the dashboards array changes, sync each one to
+  // Supabase. New ones are POSTed once; subsequent edits are PUTs.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    for (const d of dashboards) {
+      const timer = saveTimersRef.current.get(d.id);
+      if (timer) clearTimeout(timer);
+      saveTimersRef.current.set(d.id, setTimeout(() => {
+        if (persistedIdsRef.current.has(d.id)) {
+          void api.updateDashboard(d.id, {
+            name: d.name,
+            widgets: d.widgets,
+            layouts: d.layouts,
+          });
+        } else {
+          persistedIdsRef.current.add(d.id);
+          void api.createDashboard({
+            id: d.id,
+            name: d.name,
+            widgets: d.widgets,
+            layouts: d.layouts,
+          });
+        }
+      }, 400));
+    }
   }, [dashboards]);
 
   useEffect(() => {
@@ -1775,6 +1835,10 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
       }
       return updated;
     });
+    persistedIdsRef.current.delete(dbId);
+    const t = saveTimersRef.current.get(dbId);
+    if (t) { clearTimeout(t); saveTimersRef.current.delete(dbId); }
+    void api.deleteDashboard(dbId);
   };
 
   const handleSelectDashboard = (dbId: string) => {

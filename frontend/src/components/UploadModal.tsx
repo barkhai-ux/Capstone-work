@@ -16,9 +16,11 @@ interface UploadModalProps {
   open: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  databaseId: string | null;
+  databaseName?: string;
 }
 
-export default function UploadModal({ open, onClose, onSuccess }: UploadModalProps) {
+export default function UploadModal({ open, onClose, onSuccess, databaseId, databaseName }: UploadModalProps) {
   const [preview, setPreview] = useState<UploadPreview | null>(null);
   const [tableName, setTableName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -69,10 +71,17 @@ export default function UploadModal({ open, onClose, onSuccess }: UploadModalPro
 
   const handleCommit = async () => {
     if (!preview) return;
+    if (!databaseId) {
+      setError('Select or create a database first.');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const res = await api.commitUpload(preview.fileId, tableName || undefined);
+      const res = await api.commitUpload(preview.fileId, {
+        tableName: tableName || undefined,
+        databaseId,
+      });
       if (res.success) {
         reset();
         onSuccess();
@@ -88,6 +97,11 @@ export default function UploadModal({ open, onClose, onSuccess }: UploadModalPro
 
   return (
     <Modal open={open} onClose={handleClose} title="Import Data" width={preview ? 'max-w-3xl' : 'max-w-lg'}>
+      {databaseName && (
+        <div className="mb-3 text-xs text-gray-500">
+          Importing into <span className="font-medium text-gray-700">{databaseName}</span>
+        </div>
+      )}
       {error && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {error}

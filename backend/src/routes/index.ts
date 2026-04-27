@@ -6,10 +6,13 @@ import starSchemaRoutes from './star-schema.routes.js';
 import queryRoutes from './query.routes.js';
 import chartRoutes from './chart.routes.js';
 import snippetsRoutes from './snippets.routes.js';
+import dashboardsRoutes from './dashboards.routes.js';
+import databasesRoutes from './databases.routes.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-// Health check
+// Health check — public
 router.get('/health', (_req, res) => {
   res.json({
     success: true,
@@ -20,13 +23,15 @@ router.get('/health', (_req, res) => {
   });
 });
 
-// Mount routes
-router.use('/upload', uploadRoutes);
-router.use('/tables', tablesRoutes);
-router.use('/normalization', normalizationRoutes);
-router.use('/star-schema', starSchemaRoutes);
-router.use('/query', queryRoutes);
-router.use('/chart', chartRoutes);
-router.use('/snippets', snippetsRoutes);
+// All data routes require an authenticated Supabase user.
+router.use('/upload', requireAuth, uploadRoutes);
+router.use('/tables', requireAuth, tablesRoutes);
+router.use('/normalization', requireAuth, normalizationRoutes);
+router.use('/star-schema', requireAuth, starSchemaRoutes);
+router.use('/query', requireAuth, queryRoutes);
+router.use('/chart', requireAuth, chartRoutes);
+router.use('/snippets', requireAuth, snippetsRoutes);
+router.use('/dashboards', requireAuth, dashboardsRoutes);
+router.use('/databases', requireAuth, databasesRoutes);
 
 export default router;
