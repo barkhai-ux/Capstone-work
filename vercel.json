@@ -5,7 +5,7 @@
   "rewrites": [
     {
       "source": "/_/backend/:path*",
-      "destination": "https://capstone-work.onrender.com/:path*"
+      "destination": "https://capstone-work-1.onrender.com/:path*"
     },
     {
       "source": "/((?!_/backend).*)",
