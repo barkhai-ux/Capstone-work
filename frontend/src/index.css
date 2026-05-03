@@ -1,26 +1,198 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ════════════════════════════════════════════════════════════
+   Plinth Design System — Tokens
+   Source of truth for colors, typography, spacing, radii.
+   ════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Neutrals (Tailwind gray) ─────────────────────────────── */
+  --gray-50:  #fafafa;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-300: #d1d5db;
+  --gray-400: #9ca3af;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-800: #1f2937;
+  --gray-900: #111827;
+
+  /* ── Brand blue ───────────────────────────────────────────── */
+  --blue-50:  #eff6ff;
+  --blue-100: #dbeafe;
+  --blue-200: #bfdbfe;
+  --blue-300: #93c5fd;
+  --blue-400: #60a5fa;
+  --blue-500: #3b82f6;
+  --blue-600: #2563eb;
+  --blue-700: #1d4ed8;
+  --blue-soft-active: #e0edff;
+
+  /* ── Semantic field-type pastels ──────────────────────────── */
+  --field-text-fg:    #7c3aed;
+  --field-text-bg:    #f3e8ff;
+  --field-number-fg:  #2563eb;
+  --field-number-bg:  #dbeafe;
+  --field-date-fg:    #ea580c;
+  --field-date-bg:    #ffedd5;
+  --field-bool-fg:    #16a34a;
+  --field-bool-bg:    #dcfce7;
+
+  /* ── Status ───────────────────────────────────────────────── */
+  --success-fg: #15803d;
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
+  --error-fg:   #b91c1c;
+  --error-bg:   #fef2f2;
+  --error-border: #fecaca;
+  --warning-fg: #b45309;
+  --warning-bg: #fffbeb;
+
+  /* ── Accent (themable) ────────────────────────────────────── */
+  --accent:        var(--blue-600);
+  --accent-hover:  var(--blue-700);
+  --accent-soft:   var(--blue-50);
+  --accent-soft-active: var(--blue-soft-active);
+  --accent-text:   var(--blue-700);
+  --accent-ring:   var(--blue-500);
+
+  /* ── Surfaces ─────────────────────────────────────────────── */
+  --page-bg:    #f5f6fa;
+  --sidebar-bg: #ffffff;
+  --card-bg:    #ffffff;
+  --border:     var(--gray-200);
+
+  /* ── Typography ───────────────────────────────────────────── */
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont,
+               'Segoe UI', Roboto, sans-serif;
+
+  /* ── Layout ───────────────────────────────────────────────── */
+  --sidebar-w: 244px;
+  --topbar-h:  56px;
+}
+
+[data-accent="indigo"] {
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  --accent-soft-active: #e0e7ff;
+  --accent-text: #4338ca;
+  --accent-ring: #6366f1;
+}
+[data-accent="teal"] {
+  --accent: #0d9488;
+  --accent-hover: #0f766e;
+  --accent-soft: #f0fdfa;
+  --accent-soft-active: #ccfbf1;
+  --accent-text: #0f766e;
+  --accent-ring: #14b8a6;
+}
+
+/* ════════════════════════════════════════════════════════════
+   Base
+   ════════════════════════════════════════════════════════════ */
+html, body, #root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: Inter, system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--gray-800);
+  background: var(--page-bg);
   -webkit-font-smoothing: antialiased;
-  background: #fff;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* ═══════════════════════════════════════════
-   Sidebar (Baserow-style light)
-   ═══════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════
+   Accent helpers
+   ════════════════════════════════════════════════════════════ */
+.bg-accent              { background: var(--accent); }
+.bg-accent:hover        { background: var(--accent-hover); }
+.text-accent            { color: var(--accent); }
+.text-accent-strong     { color: var(--accent-text); }
+.bg-accent-soft         { background: var(--accent-soft); }
+.bg-accent-soft-active  { background: var(--accent-soft-active); }
+.ring-accent            { --tw-ring-color: var(--accent-ring); }
+.border-accent          { border-color: var(--accent); }
 
+/* ════════════════════════════════════════════════════════════
+   Tile / card surfaces
+   ════════════════════════════════════════════════════════════ */
+.tile-shadow {
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 6px 24px -8px rgba(15, 23, 42, 0.06);
+}
+
+.float-card {
+  box-shadow: 0 12px 40px -12px rgba(15, 23, 42, 0.18);
+}
+
+.dashed-card {
+  border: 2px dashed var(--gray-300);
+}
+
+/* ── Pastel KPI gradients ──────────────────────────────────── */
+.kpi-grad-1 {
+  background:
+    radial-gradient(120% 90% at 0% 0%, #d6e3ff 0%, transparent 55%),
+    radial-gradient(140% 100% at 100% 0%, #e6d7ff 0%, transparent 60%),
+    radial-gradient(120% 100% at 50% 100%, #ffe6e0 0%, transparent 60%),
+    linear-gradient(135deg, #f4f0ff 0%, #ffffff 100%);
+}
+.kpi-grad-2 {
+  background:
+    radial-gradient(120% 90% at 0% 0%, #d4f1eb 0%, transparent 55%),
+    radial-gradient(140% 100% at 100% 0%, #cfe6ff 0%, transparent 60%),
+    radial-gradient(120% 100% at 60% 100%, #ffe1c0 0%, transparent 60%),
+    linear-gradient(135deg, #f0fbf6 0%, #ffffff 100%);
+}
+.kpi-grad-3 {
+  background:
+    radial-gradient(120% 90% at 0% 0%, #ffe0c8 0%, transparent 55%),
+    radial-gradient(140% 100% at 100% 0%, #ffd6d6 0%, transparent 60%),
+    radial-gradient(120% 100% at 50% 100%, #f1dcff 0%, transparent 60%),
+    linear-gradient(135deg, #fff5ec 0%, #ffffff 100%);
+}
+
+/* ── Status pills ──────────────────────────────────────────── */
+.pill-success { color: var(--success-fg); background: var(--success-bg); border: 1px solid var(--success-border); }
+.pill-warn    { color: var(--warning-fg); background: var(--warning-bg); border: 1px solid #fde68a; }
+.pill-error   { color: var(--error-fg);   background: var(--error-bg);   border: 1px solid var(--error-border); }
+.pill-neutral { color: #475569; background: #f1f5f9; border: 1px solid #e2e8f0; }
+
+/* ── Animation ─────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+.fade-in { animation: fadeIn 240ms ease-out both; }
+
+@keyframes barRise {
+  from { transform: scaleY(0.05); }
+  to   { transform: scaleY(1); }
+}
+.bar-rise { transform-origin: bottom; animation: barRise 600ms cubic-bezier(0.25, 1, 0.5, 1) both; }
+
+/* ════════════════════════════════════════════════════════════
+   Sidebar
+   ════════════════════════════════════════════════════════════ */
 .sidebar {
-  width: 240px;
+  width: var(--sidebar-w);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-right: 1px solid #e5e7eb;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
   user-select: none;
 }
 
@@ -32,17 +204,17 @@ body {
   padding: 5px 10px;
   border-radius: 6px;
   font-size: 13px;
-  color: #374151;
+  color: var(--gray-700);
   transition: background 0.1s;
 }
 
 .sidebar-table-item:hover {
-  background: #f3f4f6;
+  background: var(--gray-100);
 }
 
 .sidebar-table-item.active {
-  background: #e0edff;
-  color: #1d4ed8;
+  background: var(--accent-soft-active);
+  color: var(--accent-text);
   font-weight: 500;
 }
 
@@ -54,7 +226,7 @@ body {
   width: 100%;
   padding: 7px 12px;
   font-size: 13px;
-  color: #374151;
+  color: var(--gray-700);
   text-align: left;
   transition: background 0.1s;
 }
@@ -63,17 +235,30 @@ body {
   background: #f9fafb;
 }
 
-/* ═══════════════════════════════════════════
-   Toolbar (Baserow-style)
-   ═══════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════
+   Top header bar
+   ════════════════════════════════════════════════════════════ */
+.topbar {
+  height: var(--topbar-h);
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: saturate(180%) blur(8px);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
 
+/* ════════════════════════════════════════════════════════════
+   Toolbar (Baserow-style table view)
+   ════════════════════════════════════════════════════════════ */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   height: 38px;
   padding: 0 8px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
   background: #fff;
   flex-shrink: 0;
 }
@@ -85,27 +270,26 @@ body {
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--gray-500);
   white-space: nowrap;
   transition: all 0.1s;
 }
 
 .toolbar-btn:hover {
-  background: #f3f4f6;
-  color: #111827;
+  background: var(--gray-100);
+  color: var(--gray-900);
 }
 
 .toolbar-sep {
   width: 1px;
   height: 20px;
-  background: #e5e7eb;
+  background: var(--border);
   margin: 0 4px;
 }
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════
    Spreadsheet Grid
-   ═══════════════════════════════════════════ */
-
+   ════════════════════════════════════════════════════════════ */
 .grid-table {
   border-collapse: collapse;
   width: max-content;
@@ -114,22 +298,21 @@ body {
 
 .grid-table th,
 .grid-table td {
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid var(--border);
   border-bottom: 1px solid #eee;
 }
 
-/* Column header */
 .grid-header-cell {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: #fafafa;
+  background: var(--gray-50);
   padding: 0 10px;
   height: 32px;
   text-align: left;
   font-weight: 500;
   font-size: 13px;
-  color: #374151;
+  color: var(--gray-700);
   white-space: nowrap;
   min-width: 150px;
   max-width: 300px;
@@ -143,13 +326,12 @@ body {
   align-items: center;
 }
 
-/* Row number header */
 .grid-rownum-header {
   position: sticky;
   top: 0;
   left: 0;
   z-index: 20;
-  background: #fafafa;
+  background: var(--gray-50);
   width: 46px;
   min-width: 46px;
   max-width: 46px;
@@ -159,29 +341,27 @@ body {
   border-right: 1px solid #ddd !important;
 }
 
-/* Row number cell */
 .grid-rownum {
   position: sticky;
   left: 0;
   z-index: 5;
-  background: #fafafa;
+  background: var(--gray-50);
   width: 46px;
   min-width: 46px;
   max-width: 46px;
   text-align: center;
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--gray-400);
   border-right: 1px solid #ddd !important;
   user-select: none;
   vertical-align: middle;
 }
 
-/* Data cell */
 .grid-cell {
   padding: 0 10px;
   height: 32px;
   font-size: 13px;
-  color: #111827;
+  color: var(--gray-900);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -190,7 +370,6 @@ body {
   vertical-align: middle;
 }
 
-/* Row hover */
 .grid-row {
   cursor: pointer;
   transition: background 0.05s;
@@ -205,17 +384,16 @@ body {
   color: #6366f1;
 }
 
-/* Add row placeholder */
 .grid-add-row td {
   background: #fff;
   height: 32px;
 }
 
 .grid-add-row:hover td {
-  background: #fafafa;
+  background: var(--gray-50);
 }
 
-/* Field type icons */
+/* Field type chips */
 .field-icon {
   display: inline-flex;
   align-items: center;
@@ -229,58 +407,35 @@ body {
   line-height: 1;
 }
 
-.field-icon-text {
-  color: #7c3aed;
-  background: #f3e8ff;
-}
+.field-icon-text   { color: var(--field-text-fg);   background: var(--field-text-bg); }
+.field-icon-number { color: var(--field-number-fg); background: var(--field-number-bg); }
+.field-icon-date   { color: var(--field-date-fg);   background: var(--field-date-bg); font-size: 9px; }
+.field-icon-bool   { color: var(--field-bool-fg);   background: var(--field-bool-bg); font-size: 9px; }
 
-.field-icon-number {
-  color: #2563eb;
-  background: #dbeafe;
-}
-
-.field-icon-date {
-  color: #ea580c;
-  background: #ffedd5;
-  font-size: 9px;
-}
-
-.field-icon-bool {
-  color: #16a34a;
-  background: #dcfce7;
-  font-size: 9px;
-}
-
-/* Footer */
 .grid-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   height: 32px;
   padding: 0 8px;
-  border-top: 1px solid #e5e7eb;
-  background: #fafafa;
+  border-top: 1px solid var(--border);
+  background: var(--gray-50);
   flex-shrink: 0;
 }
 
-/* ═══════════════════════════════════════════
-   Scrollbar
-   ═══════════════════════════════════════════ */
-
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* ════════════════════════════════════════════════════════════
+   Scrollbar — quiet
+   ════════════════════════════════════════════════════════════ */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
-
-::-webkit-scrollbar-track {
-  background: transparent;
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-400);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
-
-::-webkit-scrollbar-thumb {
-  background: #d1d5db;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
-}
+*::-webkit-scrollbar-track { background: transparent; }

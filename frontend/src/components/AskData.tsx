@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, FormEvent } from 'react';
 import { api, QueryResult, SnippetSummary } from '../api';
+import { Conversation, Message } from '../lib/conversations';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -20,37 +21,6 @@ ChartJS.register(
   BarElement, LineElement, PointElement, ArcElement,
   Filler, Tooltip, Legend
 );
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  result?: QueryResult;
-  error?: string;
-  savedAs?: string;
-}
-
-interface Conversation {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: string;
-}
-
-const STORAGE_KEY = 'askdata_conversations';
-
-function loadConversations(): Conversation[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveConversations(convos: Conversation[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(convos));
-}
 
 function formatValue(v: unknown): string {
   if (v === null || v === undefined) return '';
@@ -161,31 +131,26 @@ function ResultChart({ result }: { result: QueryResult }) {
   );
 }
 
-export default function AskData() {
-  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
-  const [activeId, setActiveId] = useState<string | null>(() => {
-    const convos = loadConversations();
-    return convos.length > 0 ? convos[0].id : null;
-  });
+interface AskDataProps {
+  conversations: Conversation[];
+  activeId: string | null;
+  setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
+  setActiveId: React.Dispatch<React.SetStateAction<string | null>>;
+}
+
+export default function AskData({ conversations, activeId, setConversations, setActiveId }: AskDataProps) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [snippets, setSnippets] = useState<SnippetSummary[]>([]);
   const [showSnippets, setShowSnippets] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [snippetName, setSnippetName] = useState('');
-  const [showSidebar, setShowSidebar] = useState(true);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const activeConvo = conversations.find(c => c.id === activeId) ?? null;
   const messages = activeConvo?.messages ?? [];
-
-  // Persist conversations to localStorage whenever they change
-  useEffect(() => {
-    saveConversations(conversations);
-  }, [conversations]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -209,37 +174,6 @@ export default function AskData() {
       c.id === convoId ? { ...c, messages: updater(c.messages) } : c
     ));
   }, []);
-
-  const handleNewChat = () => {
-    const newConvo: Conversation = {
-      id: crypto.randomUUID(),
-      title: 'New Chat',
-      messages: [],
-      createdAt: new Date().toISOString(),
-    };
-    setConversations(prev => [newConvo, ...prev]);
-    setActiveId(newConvo.id);
-    setInput('');
-    setSavingId(null);
-    setSnippetName('');
-  };
-
-  const handleDeleteConversation = (convoId: string) => {
-    setConversations(prev => {
-      const updated = prev.filter(c => c.id !== convoId);
-      if (activeId === convoId) {
-        setActiveId(updated.length > 0 ? updated[0].id : null);
-      }
-      return updated;
-    });
-    setDeletingId(null);
-  };
-
-  const handleSelectConversation = (convoId: string) => {
-    setActiveId(convoId);
-    setSavingId(null);
-    setSnippetName('');
-  };
 
   const handleSubmit = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -364,105 +298,15 @@ export default function AskData() {
   };
 
   return (
-    <div className="flex-1 flex min-h-0 bg-gray-50">
-      {/* Conversation sidebar */}
-      {showSidebar && (
-        <div className="w-64 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col min-h-0">
-          {/* Sidebar header */}
-          <div className="px-3 py-3 border-b border-gray-200">
-            <button
-              onClick={handleNewChat}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 transition-colors"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-              </svg>
-              New Chat
-            </button>
-          </div>
-
-          {/* Conversation list */}
-          <div className="flex-1 overflow-y-auto min-h-0">
-            {conversations.length === 0 ? (
-              <div className="px-4 py-8 text-center">
-                <p className="text-xs text-gray-400">No conversations yet</p>
-                <p className="text-[10px] text-gray-300 mt-1">Start a new chat to begin</p>
-              </div>
-            ) : (
-              <div className="py-1.5">
-                {conversations.map(convo => (
-                  <div
-                    key={convo.id}
-                    className={`group relative flex items-center mx-1.5 mb-0.5 rounded-lg transition-colors ${
-                      activeId === convo.id
-                        ? 'bg-blue-50 text-blue-700'
-                        : 'text-gray-600 hover:bg-gray-50'
-                    }`}
-                  >
-                    <button
-                      onClick={() => handleSelectConversation(convo.id)}
-                      className="flex-1 text-left px-3 py-2.5 min-w-0"
-                    >
-                      <div className="text-xs font-medium truncate">{convo.title}</div>
-                      <div className="text-[10px] text-gray-400 mt-0.5">
-                        {convo.messages.length === 0
-                          ? 'Empty'
-                          : `${Math.ceil(convo.messages.length / 2)} message${Math.ceil(convo.messages.length / 2) !== 1 ? 's' : ''}`
-                        }
-                      </div>
-                    </button>
-
-                    {/* Delete button */}
-                    {deletingId === convo.id ? (
-                      <div className="flex items-center gap-1 pr-2">
-                        <button
-                          onClick={() => handleDeleteConversation(convo.id)}
-                          className="px-1.5 py-0.5 text-[10px] font-medium text-red-600 bg-red-50 rounded hover:bg-red-100 transition-colors"
-                        >
-                          Delete
-                        </button>
-                        <button
-                          onClick={() => setDeletingId(null)}
-                          className="px-1.5 py-0.5 text-[10px] text-gray-400 hover:text-gray-600"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setDeletingId(convo.id)}
-                        className="p-1.5 mr-1.5 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                        </svg>
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
+    <div className="flex-1 flex min-h-0" style={{ background: 'var(--page-bg)' }}>
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-h-0 min-w-0">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-gray-200">
           <div className="flex items-center gap-2.5">
-            <button
-              onClick={() => setShowSidebar(!showSidebar)}
-              className="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-              title={showSidebar ? 'Hide sidebar' : 'Show sidebar'}
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-              </svg>
-            </button>
-            <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
-              <svg className="w-4.5 h-4.5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+            <div className="w-8 h-8 rounded-lg bg-accent-soft flex items-center justify-center">
+              <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
               </svg>
             </div>
             <div>

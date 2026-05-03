@@ -3,10 +3,19 @@ import { asyncHandler } from '../middleware/error-handler.js';
 import { sendSuccess, sendNotFound, sendBadRequest } from '../utils/response.js';
 import { duckdbService } from '../services/duckdb.service.js';
 import { userTablesService } from '../services/user-tables.service.js';
+import { rehydrateService } from '../services/rehydrate.service.js';
 import { tableIdSchema, getTableDataSchema } from '../services/validation.service.js';
+import { getCurrentDatabaseId } from '../middleware/auth.js';
 import logger from '../utils/logger.js';
 
 export const listTables = asyncHandler(async (_req: Request, res: Response) => {
+  // Self-heal: if the local DuckDB file has been wiped (Render free-tier
+  // disk reset, fresh dev backend, etc.), pull any tables we have in
+  // Supabase Storage back down before listing.
+  await rehydrateService
+    .ensureTablesForDatabase(getCurrentDatabaseId())
+    .catch((err) => logger.warn(`Rehydrate failed: ${(err as Error).message}`));
+
   const tables = await duckdbService.listTables();
   return sendSuccess(res, { tables });
 });

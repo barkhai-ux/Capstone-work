@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { TableInfo, DatabaseRecord } from '../api';
 import { useAuth } from '../auth';
+import { Conversation } from '../lib/conversations';
 
 interface SidebarProps {
   databases: DatabaseRecord[];
@@ -19,6 +20,11 @@ interface SidebarProps {
   onCreateDatabase: () => void;
   onRenameDatabase: (id: string) => void;
   onDeleteDatabase: (id: string) => void;
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  onNewConversation: () => void;
+  onSelectConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
 }
 
 type ContextMenu =
@@ -42,7 +48,14 @@ export default function Sidebar({
   onCreateDatabase,
   onRenameDatabase,
   onDeleteDatabase,
+  conversations,
+  activeConversationId,
+  onNewConversation,
+  onSelectConversation,
+  onDeleteConversation,
 }: SidebarProps) {
+  const [askExpanded, setAskExpanded] = useState(true);
+  const [deletingConvoId, setDeletingConvoId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [collapsedDbs, setCollapsedDbs] = useState<Set<string>>(new Set());
@@ -89,14 +102,30 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
+      {/* Workspace header */}
+      <div className="px-3 pt-3 pb-2.5">
+        <div className="w-full flex items-center gap-2 rounded-lg px-2 py-2">
+          <div
+            className="w-8 h-8 rounded-md flex items-center justify-center text-white font-bold text-[13px] shadow-sm"
+            style={{ background: 'linear-gradient(135deg, var(--accent), var(--accent-hover))' }}
+          >
+            P
+          </div>
+          <div className="flex-1 text-left min-w-0">
+            <div className="text-[10px] text-gray-400 leading-none uppercase tracking-wider font-semibold">Workspace</div>
+            <div className="text-[13px] font-semibold text-gray-900 truncate leading-tight mt-0.5">Plinth</div>
+          </div>
+        </div>
+      </div>
+
       {/* Search */}
-      <div className="px-3 pt-3 pb-2">
+      <div className="px-3 pb-2">
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search tables..."
-          className="w-full flex items-center gap-2 px-2.5 py-[7px] bg-gray-100 rounded-md text-gray-600 text-[13px] focus:outline-none focus:ring-1 focus:ring-blue-400"
+          className="w-full flex items-center gap-2 px-2.5 py-[7px] bg-gray-100 rounded-md text-gray-600 text-[13px] focus:outline-none focus:ring-1 focus:ring-blue-400 placeholder:text-gray-400"
         />
       </div>
 
@@ -108,7 +137,7 @@ export default function Sidebar({
             onClick={onDashboard}
             className={`flex items-center gap-2 w-full px-2.5 py-[6px] rounded-md text-[13px] transition-colors ${
               view === 'dashboard'
-                ? 'bg-blue-50 text-blue-700 font-medium'
+                ? 'bg-accent-soft text-accent-strong font-medium'
                 : 'text-gray-600 hover:bg-gray-100'
             }`}
           >
@@ -119,21 +148,100 @@ export default function Sidebar({
           </button>
         </div>
 
-        {/* Ask Your Data */}
+        {/* Ask Your Data + chat history */}
         <div className="px-1">
-          <button
-            onClick={onAskData}
-            className={`flex items-center gap-2 w-full px-2.5 py-[6px] rounded-md text-[13px] transition-colors ${
+          <div
+            className={`group flex items-center gap-1.5 w-full pr-1 rounded-md text-[13px] transition-colors ${
               view === 'ask-data'
-                ? 'bg-blue-50 text-blue-700 font-medium'
+                ? 'bg-accent-soft text-accent-strong font-medium'
                 : 'text-gray-600 hover:bg-gray-100'
             }`}
           >
-            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-            </svg>
-            Ask Your Data
-          </button>
+            <button
+              onClick={() => setAskExpanded((v) => !v)}
+              className="w-3 h-3 ml-2 flex items-center justify-center text-gray-400 flex-shrink-0"
+              title={askExpanded ? 'Collapse' : 'Expand'}
+            >
+              <svg className={`w-2.5 h-2.5 transition-transform ${askExpanded ? '' : '-rotate-90'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+            <button
+              onClick={onAskData}
+              className="flex-1 flex items-center gap-2 py-[6px] text-left min-w-0"
+            >
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
+              </svg>
+              <span className="flex-1 truncate">Ask Your Data</span>
+              <span className="text-[9px] font-bold tracking-wider text-accent-strong">AI</span>
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onNewConversation(); setAskExpanded(true); }}
+              className="w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-accent-strong hover:bg-accent-soft-active transition-colors flex-shrink-0"
+              title="New chat"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+            </button>
+          </div>
+
+          {askExpanded && (
+            <div className="ml-4 mt-0.5 space-y-px">
+              {conversations.length === 0 ? (
+                <div className="px-2.5 py-1.5 text-[11px] text-gray-400 italic">
+                  No chats yet — use + to start
+                </div>
+              ) : (
+                conversations.map((convo) => (
+                  <div
+                    key={convo.id}
+                    className={`group flex items-center gap-1.5 px-2 py-1 rounded-md text-[12.5px] transition-colors ${
+                      view === 'ask-data' && activeConversationId === convo.id
+                        ? 'bg-accent-soft-active text-accent-strong font-medium'
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="w-1 h-1 rounded-full bg-gray-300 ml-1 flex-shrink-0" />
+                    <button
+                      onClick={() => onSelectConversation(convo.id)}
+                      className="flex-1 truncate text-left min-w-0"
+                      title={convo.title}
+                    >
+                      {convo.title}
+                    </button>
+                    {deletingConvoId === convo.id ? (
+                      <div className="flex items-center gap-0.5 flex-shrink-0">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onDeleteConversation(convo.id); setDeletingConvoId(null); }}
+                          className="px-1 py-0.5 text-[10px] font-medium text-red-600 hover:underline"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDeletingConvoId(null); }}
+                          className="px-1 py-0.5 text-[10px] text-gray-400 hover:text-gray-600"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeletingConvoId(convo.id); }}
+                        className="w-4 h-4 flex items-center justify-center rounded text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0"
+                        title="Delete chat"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </div>
 
         {/* Databases section */}
@@ -274,12 +382,16 @@ export default function Sidebar({
       </nav>
 
       {/* User footer */}
-      <div className="border-t border-gray-200 px-3 py-2 flex items-center gap-2">
-        <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[11px] font-semibold flex-shrink-0">
+      <div className="border-t border-gray-200 px-3 py-2.5 flex items-center gap-2">
+        <div
+          className="w-7 h-7 rounded-full text-white flex items-center justify-center text-[11px] font-semibold flex-shrink-0 shadow-sm"
+          style={{ background: 'linear-gradient(135deg, var(--accent), var(--accent-hover))' }}
+        >
           {(session?.user.email ?? '?').slice(0, 1).toUpperCase()}
         </div>
-        <div className="flex-1 min-w-0 text-[11px] text-gray-600 truncate">
-          {session?.user.email ?? ''}
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-medium text-gray-800 truncate">{session?.user.email ?? ''}</div>
+          <div className="text-[10px] text-gray-400">Signed in</div>
         </div>
         <button
           onClick={() => { void signOut(); }}

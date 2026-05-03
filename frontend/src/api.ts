@@ -189,7 +189,10 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 async function request<T>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
   let attempt = 0;
-  const authedOptions = await withAuth(options);
+  // Bypass the HTTP cache. We do our own stale-while-revalidate in
+  // localStorage; with HTTP caching on, Express's ETag layer can return a
+  // bodyless 304 that fetch surfaces as a non-JSON failure.
+  const authedOptions = await withAuth({ cache: 'no-store', ...options });
   while (true) {
     let res: Response;
     try {

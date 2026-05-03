@@ -9,6 +9,8 @@ import { GridLayout, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { api, TableInfo, DashboardRecord } from '../api';
 import ConfirmDialog from './ConfirmDialog';
+import { readCache, writeCache } from '../lib/cache';
+import { supabase } from '../supabase';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, RadialLinearScale, Title, Tooltip, Legend, Filler);
 
@@ -105,6 +107,75 @@ const TOP_N_OPTIONS = [
   { value: 25, label: 'Top 25' },
 ] as const;
 
+// ── Filters ──
+const FILTER_OPS = [
+  { value: '=',         label: '=' },
+  { value: '!=',        label: '≠' },
+  { value: '>',         label: '>' },
+  { value: '>=',        label: '≥' },
+  { value: '<',         label: '<' },
+  { value: '<=',        label: '≤' },
+  { value: 'contains',  label: 'contains' },
+  { value: 'in',        label: 'in' },
+  { value: 'notIn',     label: 'not in' },
+  { value: 'isNull',    label: 'is empty' },
+  { value: 'isNotNull', label: 'is not empty' },
+] as const;
+
+type FilterOp = typeof FILTER_OPS[number]['value'];
+
+interface Filter {
+  id: string;
+  column: string;
+  op: FilterOp;
+  value: string;
+}
+
+function applyFilters(rows: Record<string, unknown>[], filters?: Filter[]): Record<string, unknown>[] {
+  if (!filters || filters.length === 0) return rows;
+  const active = filters.filter((f) => f.column && (f.op === 'isNull' || f.op === 'isNotNull' || f.value !== ''));
+  if (active.length === 0) return rows;
+
+  return rows.filter((row) => active.every((f) => matchFilter(row[f.column], f)));
+}
+
+function matchFilter(raw: unknown, f: Filter): boolean {
+  if (f.op === 'isNull') return raw === null || raw === undefined || raw === '';
+  if (f.op === 'isNotNull') return !(raw === null || raw === undefined || raw === '');
+
+  const numeric = ['>', '>=', '<', '<='].includes(f.op);
+  if (numeric) {
+    const lhs = resolveValue(raw);
+    const rhs = Number(f.value);
+    if (lhs === null || isNaN(rhs)) return false;
+    if (f.op === '>')  return lhs > rhs;
+    if (f.op === '>=') return lhs >= rhs;
+    if (f.op === '<')  return lhs < rhs;
+    if (f.op === '<=') return lhs <= rhs;
+  }
+
+  const lhs = resolveLabel(raw);
+  if (f.op === 'contains') return lhs.toLowerCase().includes(f.value.toLowerCase());
+
+  if (f.op === 'in' || f.op === 'notIn') {
+    const set = new Set(f.value.split(',').map((s) => s.trim()).filter(Boolean));
+    const hit = set.has(lhs);
+    return f.op === 'in' ? hit : !hit;
+  }
+
+  // = / != — string-compare with a numeric fallback so "5" matches 5
+  if (f.op === '=' || f.op === '!=') {
+    const lhsNum = resolveValue(raw);
+    const rhsNum = Number(f.value);
+    const equal = !isNaN(rhsNum) && lhsNum !== null
+      ? lhsNum === rhsNum
+      : lhs === f.value;
+    return f.op === '=' ? equal : !equal;
+  }
+
+  return true;
+}
+
 interface ChartWidgetConfig {
   id: string;
   widgetType: 'chart';
@@ -117,6 +188,7 @@ interface ChartWidgetConfig {
   aggregation: Aggregation;
   topN: number;
   dateGrouping: DateGrouping;
+  filters?: Filter[];
   title: string;
   style: StyleConfig;
 }
@@ -141,6 +213,7 @@ interface TableWidgetConfig {
   widgetType: 'table';
   tableId: string;
   columns: string[];
+  filters?: Filter[];
   title: string;
   maxRows: number;
   style: StyleConfig;
@@ -385,13 +458,15 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
 
   const isLineOrArea = config.chartType === 'line' || config.chartType === 'area';
 
+  const filteredData = useMemo(() => applyFilters(data ?? [], config.filters), [data, config.filters]);
+
   const chartData = (() => {
-    if (!data || data.length === 0) return null;
+    if (!filteredData || filteredData.length === 0) return null;
 
     // Scatter chart: raw x/y points, no grouping
     if (config.chartType === 'scatter') {
       const points: { x: number; y: number }[] = [];
-      for (const row of data) {
+      for (const row of filteredData) {
         const x = resolveValue(row[config.labelColumn]);
         const y = resolveValue(row[config.valueColumn]);
         if (x !== null && y !== null) points.push({ x, y });
@@ -414,7 +489,7 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
 
     const dg = config.dateGrouping ?? 'none';
     const groups: Record<string, number[]> = {};
-    for (const row of data) {
+    for (const row of filteredData) {
       const label = dg !== 'none' ? resolveDateLabel(row[config.labelColumn], dg) : resolveLabel(row[config.labelColumn]);
       const val = resolveValue(row[config.valueColumn]);
       if (!groups[label]) groups[label] = [];
@@ -519,7 +594,13 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0 drag-handle cursor-grab active:cursor-grabbing">
         <div className="min-w-0">
           <h3 className="font-semibold truncate leading-tight" style={{ fontSize: s.titleSize, color: s.titleColor }}>{config.title}</h3>
-          <p className="text-[10px] text-gray-400 truncate mt-0.5">{tableName} &middot; {config.aggregation}{partialData ? ' (first 500 rows)' : ''}</p>
+          <p className="text-[10px] text-gray-400 truncate mt-0.5">
+            {tableName} &middot; {config.aggregation}
+            {config.filters && config.filters.filter(f => f.column).length > 0 && (
+              <> &middot; {config.filters.filter(f => f.column).length} filter{config.filters.filter(f => f.column).length === 1 ? '' : 's'}</>
+            )}
+            {partialData ? ' (first 500 rows)' : ''}
+          </p>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
           <button onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onDelete(); }} aria-label="Delete widget" className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
@@ -595,11 +676,19 @@ function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
   useEffect(() => {
     if (!config.tableId || config.columns.length === 0) { setData(null); setLoading(false); return; }
     setLoading(true);
-    api.getTableData(config.tableId, 1, config.maxRows || 50).then((res) => {
+    // Pull a wider window so filters have something to chew on; we slice
+    // back down to maxRows after filtering.
+    const fetchRows = Math.max(config.maxRows || 50, (config.filters?.length ?? 0) > 0 ? 500 : 0) || 50;
+    api.getTableData(config.tableId, 1, fetchRows).then((res) => {
       if (res.success && res.data) setData(res.data.rows);
       else setData([]);
     }).finally(() => setLoading(false));
-  }, [config.tableId, config.columns.length, config.maxRows]);
+  }, [config.tableId, config.columns.length, config.maxRows, config.filters]);
+
+  const filteredData = useMemo(() => {
+    const filtered = applyFilters(data ?? [], config.filters);
+    return filtered.slice(0, config.maxRows || 50);
+  }, [data, config.filters, config.maxRows]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -631,7 +720,12 @@ function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
         <div className="min-w-0">
           <h3 className="font-semibold truncate leading-tight" style={{ fontSize: s.titleSize, color: s.titleColor }}>{config.title || 'Table'}</h3>
           {config.columns.length > 0 && (
-            <p className="text-[10px] text-gray-400 truncate mt-0.5">{data?.length ?? 0} rows</p>
+            <p className="text-[10px] text-gray-400 truncate mt-0.5">
+              {filteredData.length} rows
+              {config.filters && config.filters.filter(f => f.column).length > 0 && (
+                <> &middot; {config.filters.filter(f => f.column).length} filter{config.filters.filter(f => f.column).length === 1 ? '' : 's'}</>
+              )}
+            </p>
           )}
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -654,8 +748,10 @@ function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
         <div className="flex-1 overflow-auto min-h-0">
           {loading ? (
             <div className="h-full flex items-center justify-center"><div className="w-5 h-5 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin" /></div>
-          ) : !data || data.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-xs text-gray-400">No data</div>
+          ) : !filteredData || filteredData.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-xs text-gray-400">
+              {(data?.length ?? 0) > 0 ? 'No rows match the filter' : 'No data'}
+            </div>
           ) : (
             <table className="w-full text-[11px]">
               <thead className="sticky top-0" style={{ background: s.bgColor }}>
@@ -673,7 +769,7 @@ function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
                 </tr>
               </thead>
               <tbody>
-                {data.map((row, ri) => (
+                {filteredData.map((row, ri) => (
                   <tr key={ri} className="hover:bg-gray-50/50">
                     {config.columns.map((col) => (
                       <td key={col} className="px-2 py-1 border-b truncate max-w-[150px]" style={{ color: s.axisLabelColor, borderColor: s.borderColor }}>
@@ -772,7 +868,8 @@ function MiniWidgetContent({ widget, tableData }: {
 
   if (wt === 'table') {
     const tw = widget as TableWidgetConfig;
-    const rows = tableData.get(tw.tableId) ?? [];
+    const rawRows = tableData.get(tw.tableId) ?? [];
+    const rows = applyFilters(rawRows, tw.filters);
     const cols = tw.columns.slice(0, PREVIEW_TABLE_COLS);
     const previewRows = rows.slice(0, PREVIEW_TABLE_ROWS);
 
@@ -815,8 +912,9 @@ function MiniWidgetContent({ widget, tableData }: {
   // Chart widget
   const cw = widget as ChartWidgetConfig;
   const ids = getTableIds(cw);
-  const mergedRows: Record<string, unknown>[] = [];
-  for (const id of ids) mergedRows.push(...(tableData.get(id) ?? []));
+  const rawRows: Record<string, unknown>[] = [];
+  for (const id of ids) rawRows.push(...(tableData.get(id) ?? []));
+  const mergedRows = applyFilters(rawRows, cw.filters);
 
   if (mergedRows.length === 0) {
     return (
@@ -1069,12 +1167,24 @@ function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename
   };
 
   return (
-    <div className="flex-1 overflow-auto bg-gray-50">
-      <div className="max-w-5xl mx-auto px-8 py-8">
+    <div className="flex-1 overflow-auto" style={{ background: 'var(--page-bg)' }}>
+      <div className="max-w-6xl mx-auto px-8 py-8">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-xl font-bold text-gray-800">Dashboards</h1>
-          <p className="text-sm text-gray-400 mt-1">Create and manage your data dashboards</p>
+        <div className="mb-6 flex items-end gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Workspace</div>
+            <h1 className="text-[22px] font-bold text-gray-900 tracking-tight mt-1">Dashboards</h1>
+            <p className="text-[13px] text-gray-500 mt-1">{dashboards.length} dashboard{dashboards.length === 1 ? '' : 's'} · {tables.length} table{tables.length === 1 ? '' : 's'} available</p>
+          </div>
+          <button
+            onClick={onNew}
+            className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg bg-accent text-white text-[13px] font-medium shadow-sm transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            New dashboard
+          </button>
         </div>
 
         {/* Card grid */}
@@ -1082,21 +1192,21 @@ function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename
           {/* New Dashboard card */}
           <button
             onClick={onNew}
-            className="group flex flex-col items-center justify-center h-52 rounded-xl border-2 border-dashed border-gray-200 bg-white hover:border-blue-400 hover:bg-blue-50/50 transition-all cursor-pointer"
+            className="group flex flex-col items-center justify-center h-52 rounded-2xl dashed-card bg-white hover:border-accent hover:bg-accent-soft/40 transition-all cursor-pointer"
           >
-            <div className="w-12 h-12 rounded-xl bg-blue-50 group-hover:bg-blue-100 flex items-center justify-center mb-3 transition-colors">
-              <svg className="w-6 h-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <div className="w-12 h-12 rounded-xl bg-accent-soft group-hover:bg-accent-soft-active flex items-center justify-center mb-3 transition-colors">
+              <svg className="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
               </svg>
             </div>
-            <span className="text-sm font-medium text-gray-500 group-hover:text-blue-600 transition-colors">New Dashboard</span>
+            <span className="text-[13px] font-medium text-gray-600 group-hover:text-accent-strong transition-colors">New Dashboard</span>
           </button>
 
           {/* Dashboard cards */}
           {dashboards.map(db => (
             <div
               key={db.id}
-              className="group relative flex flex-col h-52 rounded-xl border border-gray-200 bg-white hover:shadow-lg hover:border-blue-300 transition-all cursor-pointer overflow-hidden"
+              className="group relative flex flex-col h-52 rounded-2xl border border-gray-200 bg-white tile-shadow hover:shadow-lg hover:border-accent transition-all cursor-pointer overflow-hidden fade-in"
               onClick={() => onSelect(db.id)}
             >
               {/* Preview area */}
@@ -1191,6 +1301,85 @@ function Section({ title, children, defaultOpen = true }: { title: string; child
   );
 }
 
+// ── Filter List ──
+
+function FilterList({ columns, filters, onChange }: {
+  columns: { name: string; type: string }[];
+  filters: Filter[];
+  onChange: (next: Filter[]) => void;
+}) {
+  const update = (id: string, patch: Partial<Filter>) =>
+    onChange(filters.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  const remove = (id: string) => onChange(filters.filter((f) => f.id !== id));
+  const add = () =>
+    onChange([
+      ...filters,
+      { id: crypto.randomUUID(), column: columns[0]?.name ?? '', op: '=', value: '' },
+    ]);
+
+  return (
+    <div className="space-y-1.5">
+      {filters.length === 0 && (
+        <p className="text-[10px] text-gray-400 italic px-0.5">No filters — chart shows all rows.</p>
+      )}
+      {filters.map((f) => {
+        const col = columns.find((c) => c.name === f.column);
+        const isNumeric = col && ['INTEGER', 'DECIMAL', 'BIGINT', 'DOUBLE', 'FLOAT'].includes(col.type.toUpperCase());
+        const valueDisabled = f.op === 'isNull' || f.op === 'isNotNull';
+        return (
+          <div key={f.id} className="flex items-center gap-1">
+            <select
+              value={f.column}
+              onChange={(e) => update(f.id, { column: e.target.value })}
+              className="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded px-1.5 py-1 text-[10.5px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            >
+              {columns.map((c) => (
+                <option key={c.name} value={c.name}>{c.name}</option>
+              ))}
+            </select>
+            <select
+              value={f.op}
+              onChange={(e) => update(f.id, { op: e.target.value as FilterOp })}
+              className="bg-gray-50 border border-gray-200 rounded px-1 py-1 text-[10.5px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            >
+              {FILTER_OPS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <input
+              type={isNumeric && ['>', '>=', '<', '<='].includes(f.op) ? 'number' : 'text'}
+              value={f.value}
+              onChange={(e) => update(f.id, { value: e.target.value })}
+              disabled={valueDisabled}
+              placeholder={f.op === 'in' || f.op === 'notIn' ? 'a, b, c' : valueDisabled ? '—' : 'value'}
+              className="w-20 bg-gray-50 border border-gray-200 rounded px-1.5 py-1 text-[10.5px] text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-50"
+            />
+            <button
+              onClick={() => remove(f.id)}
+              className="w-5 h-5 flex items-center justify-center rounded text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0"
+              title="Remove filter"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        );
+      })}
+      <button
+        onClick={add}
+        disabled={columns.length === 0}
+        className="w-full flex items-center justify-center gap-1 py-1.5 rounded-lg border border-dashed border-gray-200 text-[10.5px] text-gray-500 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50/40 transition-colors disabled:opacity-40"
+      >
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+        Add filter
+      </button>
+    </div>
+  );
+}
+
 // ── Toolbox ──
 
 function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit }: {
@@ -1212,6 +1401,15 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
 
   const parseChartWidget = (d: Record<string, unknown>): ChartWidgetConfig => {
     const ids = Array.isArray(d.tableIds) ? (d.tableIds as string[]) : d.tableId ? [d.tableId as string] : [tables[0]?.id ?? ''];
+    const rawFilters = Array.isArray(d.filters) ? d.filters as Partial<Filter>[] : [];
+    const filters: Filter[] = rawFilters
+      .filter((f) => f && typeof f.column === 'string')
+      .map((f) => ({
+        id: f.id ?? crypto.randomUUID(),
+        column: f.column!,
+        op: (f.op as FilterOp) ?? '=',
+        value: typeof f.value === 'string' ? f.value : f.value != null ? String(f.value) : '',
+      }));
     return {
       id: crypto.randomUUID(),
       widgetType: 'chart',
@@ -1222,6 +1420,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       aggregation: (d.aggregation as Aggregation) ?? 'sum',
       topN: typeof d.topN === 'number' ? d.topN : 0,
       dateGrouping: (d.dateGrouping as DateGrouping) ?? 'none',
+      filters,
       title: (d.title as string) ?? '',
       style: { ...DEFAULT_STYLE, ...((d.style as Partial<StyleConfig>) ?? {}) },
     };
@@ -1285,6 +1484,11 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
   const [aggregation, setAggregation] = useState<Aggregation>(editing?.widgetType === 'chart' ? editing.aggregation : 'sum');
   const [topN, setTopN] = useState<number>(editing?.widgetType === 'chart' ? (editing.topN ?? 0) : 0);
   const [dateGrouping, setDateGrouping] = useState<DateGrouping>(editing?.widgetType === 'chart' ? (editing.dateGrouping ?? 'none') : 'none');
+  const [filters, setFilters] = useState<Filter[]>(
+    editing?.widgetType === 'chart' || editing?.widgetType === 'table'
+      ? (editing.filters ?? [])
+      : []
+  );
 
   // Text state
   const [textContent, setTextContent] = useState(editing?.widgetType === 'text' ? editing.content : '');
@@ -1307,11 +1511,13 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
         setAggregation(editing.aggregation);
         setTopN(editing.topN ?? 0);
         setDateGrouping(editing.dateGrouping ?? 'none');
+        setFilters(editing.filters ?? []);
       } else if (editing.widgetType === 'text') {
         setTextContent(editing.content);
       } else if (editing.widgetType === 'table') {
         setTableIds(editing.tableId ? [editing.tableId] : []);
         setMaxRows(editing.maxRows);
+        setFilters(editing.filters ?? []);
       }
     }
   }, [editing]);
@@ -1356,6 +1562,8 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
     ? true
     : !!(tableIds.length > 0 && labelColumn && valueColumn && conflicts.length === 0);
 
+  const cleanFilters = filters.filter((f) => f.column);
+
   const handleSubmit = () => {
     if (!canSubmit) return;
     if (widgetType === 'chart') {
@@ -1363,6 +1571,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
         id: editing?.id ?? crypto.randomUUID(),
         widgetType: 'chart',
         chartType, tableIds, labelColumn, valueColumn, aggregation, topN, dateGrouping,
+        filters: cleanFilters,
         title: title || `${valueColumn} by ${labelColumn}`,
         style,
       };
@@ -1380,15 +1589,16 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       const cfg: TableWidgetConfig = {
         id: editing?.id ?? crypto.randomUUID(),
         widgetType: 'table',
-        tableId: '',
-        columns: [],
+        tableId: editing?.widgetType === 'table' ? editing.tableId : '',
+        columns: editing?.widgetType === 'table' ? editing.columns : [],
+        filters: cleanFilters,
         title: title || 'Table',
         maxRows,
         style,
       };
       editing ? onUpdate(cfg) : onAdd(cfg);
     }
-    if (!editing) { setTitle(''); setTextContent(''); }
+    if (!editing) { setTitle(''); setTextContent(''); setFilters([]); }
   };
 
   const isAxisChart = chartType === 'bar' || chartType === 'line' || chartType === 'area' || chartType === 'scatter';
@@ -1587,6 +1797,11 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
               })()}
             </Section>
 
+            {/* Filters */}
+            <Section title={`Filters${cleanFilters.length > 0 ? ` (${cleanFilters.length})` : ''}`} defaultOpen={cleanFilters.length > 0}>
+              <FilterList columns={columns} filters={filters} onChange={setFilters} />
+            </Section>
+
             {/* Style */}
             <Section title="Style" defaultOpen={false}>
               <div>
@@ -1674,21 +1889,28 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
 
         {/* ── Table Builder ── */}
         {widgetType === 'table' && (
-          <div className="px-4 pb-3 space-y-3">
-            <div className="flex items-start gap-2 p-2.5 bg-blue-50 rounded-xl">
-              <svg className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
-              </svg>
-              <p className="text-[11px] text-blue-700 leading-relaxed">
-                Add this widget, then <strong>drag columns</strong> from the sidebar onto it.
-              </p>
+          <>
+            <div className="px-4 pb-3 space-y-3">
+              <div className="flex items-start gap-2 p-2.5 bg-blue-50 rounded-xl">
+                <svg className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+                </svg>
+                <p className="text-[11px] text-blue-700 leading-relaxed">
+                  Add this widget, then <strong>drag columns</strong> from the sidebar onto it.
+                </p>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-gray-500">Max Rows</span>
+                <input type="number" min={5} max={500} value={maxRows} onChange={(e) => setMaxRows(Number(e.target.value))}
+                  className="w-16 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-1 text-[11px] text-gray-600 text-center focus:outline-none focus:ring-1 focus:ring-blue-400" />
+              </div>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] text-gray-500">Max Rows</span>
-              <input type="number" min={5} max={500} value={maxRows} onChange={(e) => setMaxRows(Number(e.target.value))}
-                className="w-16 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-1 text-[11px] text-gray-600 text-center focus:outline-none focus:ring-1 focus:ring-blue-400" />
-            </div>
-          </div>
+            {editing?.widgetType === 'table' && columns.length > 0 && (
+              <Section title={`Filters${cleanFilters.length > 0 ? ` (${cleanFilters.length})` : ''}`} defaultOpen={cleanFilters.length > 0}>
+                <FilterList columns={columns} filters={filters} onChange={setFilters} />
+              </Section>
+            )}
+          </>
         )}
 
         {/* Common: Title */}
@@ -1750,11 +1972,26 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
   const widgets = activeDashboard?.widgets ?? [];
   const layouts = activeDashboard?.layouts ?? {};
 
-  // Initial load: migrate any legacy localStorage entries, then fetch the
-  // user's dashboards from Supabase.
+  // Initial load: hydrate from the local cache instantly, then refetch
+  // from Supabase in the background. Migrate any legacy localStorage entries.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (cancelled) return;
+      const uid = user?.id ?? null;
+      const cacheKey = uid ? `dashboards:${uid}` : null;
+
+      if (cacheKey) {
+        const cached = readCache<DashboardRecord[]>(cacheKey);
+        if (cached?.length) {
+          const list = cached.map(recordToInstance);
+          persistedIdsRef.current = new Set(list.map(d => d.id));
+          setDashboards(list);
+          hydratedRef.current = true;
+        }
+      }
+
       try { await migrateLocalToSupabase(); } catch { /* non-fatal */ }
       const res = await api.listDashboards();
       if (cancelled) return;
@@ -1762,6 +1999,7 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
         const list = res.data.map(recordToInstance);
         persistedIdsRef.current = new Set(list.map(d => d.id));
         setDashboards(list);
+        if (cacheKey) writeCache(cacheKey, res.data);
       }
       hydratedRef.current = true;
     })();
@@ -1770,8 +2008,22 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
 
   // Debounced save: whenever the dashboards array changes, sync each one to
   // Supabase. New ones are POSTed once; subsequent edits are PUTs.
+  // Also mirror the array into the local cache so the next load is instant.
   useEffect(() => {
     if (!hydratedRef.current) return;
+    void supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        const records: DashboardRecord[] = dashboards.map(d => ({
+          id: d.id,
+          name: d.name,
+          widgets: d.widgets,
+          layouts: d.layouts,
+          created_at: d.createdAt,
+          updated_at: new Date().toISOString(),
+        }));
+        writeCache(`dashboards:${user.id}`, records);
+      }
+    });
     for (const d of dashboards) {
       const timer = saveTimersRef.current.get(d.id);
       if (timer) clearTimeout(timer);
@@ -1956,18 +2208,23 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
   // No active dashboard — show Power BI-style home
   if (!activeDashboard) {
     return (
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col min-h-0" style={{ background: 'var(--page-bg)' }}>
         {tables.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center bg-gray-50">
-            <div className="text-center">
-              <div className="mx-auto w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
-                <svg className="w-7 h-7 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+          <div className="flex-1 flex items-center justify-center px-8">
+            <div className="kpi-grad-1 tile-shadow rounded-2xl px-10 py-12 max-w-md w-full text-center fade-in">
+              <div className="mx-auto w-14 h-14 rounded-2xl bg-white/70 backdrop-blur border border-white/60 flex items-center justify-center mb-4 shadow-sm">
+                <svg className="w-7 h-7 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
                 </svg>
               </div>
-              <h3 className="text-sm font-semibold text-gray-600 mb-1">No data to visualize</h3>
-              <p className="text-xs text-gray-400 mb-4">Import data first to start building charts</p>
-              <button onClick={onImport} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors">Import Data</button>
+              <h3 className="text-[15px] font-semibold text-gray-900 mb-1">No data to visualize</h3>
+              <p className="text-[13px] text-gray-500 mb-5">Import a CSV, Excel, or JSON file to start building charts.</p>
+              <button onClick={onImport} className="inline-flex items-center gap-2 px-4 h-9 bg-accent text-white rounded-lg text-[13px] font-medium transition-colors shadow-sm">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                </svg>
+                Import data
+              </button>
             </div>
           </div>
         ) : (
