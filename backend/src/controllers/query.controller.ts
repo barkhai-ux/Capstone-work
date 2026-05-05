@@ -25,11 +25,11 @@ export const queryTable = asyncHandler(
     const tablesContext: { name: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[] = [];
 
     for (const t of allTables) {
-      const paginated = await duckdbService.getTableData(t.name, 1, 10);
+      const sampleData = await duckdbService.getRandomSample(t.name, 10);
       tablesContext.push({
         name: t.name,
         columns: t.columns.map(c => ({ name: c.name, type: c.type })),
-        sampleData: paginated.data,
+        sampleData,
       });
     }
 

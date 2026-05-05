@@ -163,6 +163,27 @@ class DuckDBService {
   /** List tables, scoped to the current database when one is set in context. */
   async listTables(): Promise<TableInfo[]> {
     const databaseId = getCurrentDatabaseId();
+
+    if (databaseId) {
+      // One-shot backfill: dim/lookup/snapshot rows registered before the
+      // database_id propagation fix have NULL database_id. Their `original_file`
+      // contains the base table name (e.g., "dimension_from_<fact>",
+      // "snapshot_of_<fact>", "normalized_from_<fact>"). Inherit the base
+      // table's database_id so they show up under the right database.
+      await this.run(
+        `UPDATE _table_metadata AS child
+         SET database_id = parent.database_id
+         FROM _table_metadata AS parent
+         WHERE child.database_id IS NULL
+           AND parent.database_id IS NOT NULL
+           AND (
+             child.original_file = 'dimension_from_' || parent.name
+             OR child.original_file = 'snapshot_of_' || parent.name
+             OR child.original_file = 'normalized_from_' || parent.name
+           )`
+      );
+    }
+
     const tables = databaseId
       ? await this.all<{ id: string; name: string; created_at: string }>(
           `SELECT id, name, created_at FROM _table_metadata WHERE database_id = $1 ORDER BY created_at DESC`,
@@ -271,6 +292,28 @@ class DuckDBService {
     return 'VARCHAR';
   }
 
+  /**
+   * Random sample of rows for AI prompts. ORDER BY RANDOM() avoids the
+   * "first N rows are sorted/clustered" bias that breaks column-type and
+   * cardinality inference. Falls back to a non-random scan if RANDOM()
+   * fails for any reason.
+   */
+  async getRandomSample(
+    tableName: string,
+    sampleSize = 15
+  ): Promise<Record<string, unknown>[]> {
+    const limit = Math.max(1, Math.min(100, sampleSize));
+    try {
+      return await this.all(
+        `SELECT * FROM "${tableName}" USING SAMPLE ${limit} ROWS`
+      );
+    } catch {
+      return await this.all(
+        `SELECT * FROM "${tableName}" ORDER BY RANDOM() LIMIT ${limit}`
+      );
+    }
+  }
+
   async getTableData(
     tableName: string,
     page = 1,
@@ -322,6 +365,55 @@ class DuckDBService {
 
     logger.info(`Deleted table: ${table.name}`);
     return true;
+  }
+
+  /**
+   * Compute lightweight stats for several columns in one pass. Used to give
+   * the AI a sense of cardinality and top values without sending raw data.
+   */
+  async getMultiColumnStats(
+    tableName: string,
+    columnNames: string[]
+  ): Promise<{
+    column: string;
+    uniqueCount: number;
+    totalRows: number;
+    nullCount: number;
+    topValues: { value: string; count: number }[];
+  }[]> {
+    const totalResult = await this.all<{ count: bigint }>(
+      `SELECT COUNT(*) as count FROM "${tableName}"`
+    );
+    const totalRows = Number(totalResult[0]?.count || 0);
+
+    const out = [];
+    for (const col of columnNames) {
+      try {
+        const [agg] = await this.all<{ uniq: bigint; nulls: bigint }>(
+          `SELECT COUNT(DISTINCT "${col}") as uniq,
+                  SUM(CASE WHEN "${col}" IS NULL THEN 1 ELSE 0 END) as nulls
+           FROM "${tableName}"`
+        );
+        const tops = await this.all<{ value: string; count: bigint }>(
+          `SELECT CAST("${col}" AS VARCHAR) as value, COUNT(*) as count
+           FROM "${tableName}"
+           WHERE "${col}" IS NOT NULL
+           GROUP BY "${col}"
+           ORDER BY count DESC
+           LIMIT 5`
+        );
+        out.push({
+          column: col,
+          uniqueCount: Number(agg?.uniq || 0),
+          totalRows,
+          nullCount: Number(agg?.nulls || 0),
+          topValues: tops.map(t => ({ value: String(t.value), count: Number(t.count) })),
+        });
+      } catch (err) {
+        logger.warn(`Stats failed for ${tableName}.${col}:`, err);
+      }
+    }
+    return out;
   }
 
   async getColumnStats(

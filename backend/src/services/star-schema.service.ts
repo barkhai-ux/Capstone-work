@@ -8,6 +8,7 @@ import {
 } from '../types/index.js';
 import logger from '../utils/logger.js';
 import { findIdColumn } from '../utils/key-detection.js';
+import { getCurrentDatabaseId } from '../middleware/auth.js';
 
 class StarSchemaService {
   async analyze(tableId: string): Promise<StarSchemaRecommendation> {
@@ -16,14 +17,18 @@ class StarSchemaService {
       throw new Error(`Table with ID ${tableId} not found`);
     }
 
-    // Get sample data for AI analysis
-    const paginated = await duckdbService.getTableData(table.name, 1, 20);
+    // Random sample + per-column stats give the AI a representative picture
+    // of cardinality and value distribution rather than just the first N rows.
+    const [sampleRows, columnStats] = await Promise.all([
+      duckdbService.getRandomSample(table.name, 15),
+      duckdbService.getMultiColumnStats(table.name, table.columns.map(c => c.name)),
+    ]);
 
-    // Call Groq AI for recommendations
     const aiResult = await groqService.analyzeForStarSchema(
       table.name,
       table.columns,
-      paginated.data
+      sampleRows,
+      columnStats
     );
 
     // Build foreign key list (one per dimension)
@@ -60,6 +65,7 @@ class StarSchemaService {
     const originalTableName = table.name;
     const dimensionTablesCreated: string[] = [];
     const allDimColumns: string[] = [];
+    const databaseId = getCurrentDatabaseId();
 
     // Step 0: Preserve a snapshot of the original table for charting
     const snapshotName = `original_${originalTableName}`;
@@ -68,7 +74,7 @@ class StarSchemaService {
         `CREATE TABLE "${snapshotName}" AS SELECT * FROM "${originalTableName}"`
       );
       const snapshotId = uuidv4();
-      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${originalTableName}`);
+      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${originalTableName}`, databaseId);
       logger.info(`Preserved original table as "${snapshotName}" for charting`);
     }
 
@@ -143,7 +149,8 @@ class StarSchemaService {
       await duckdbService.registerTable(
         dimId,
         dim.dimensionName,
-        `dimension_from_${originalTableName}`
+        `dimension_from_${originalTableName}`,
+        databaseId
       );
 
       dimensionTablesCreated.push(dim.dimensionName);

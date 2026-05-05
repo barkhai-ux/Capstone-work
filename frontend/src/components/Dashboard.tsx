@@ -7,6 +7,7 @@ import {
 import { Bar, Pie, Doughnut, Line, Scatter, Radar, PolarArea } from 'react-chartjs-2';
 import { GridLayout, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
+import { QRCodeSVG } from 'qrcode.react';
 import { api, TableInfo, DashboardRecord } from '../api';
 import ConfirmDialog from './ConfirmDialog';
 import { readCache, writeCache } from '../lib/cache';
@@ -183,6 +184,8 @@ interface ChartWidgetConfig {
   tableIds: string[];
   /** @deprecated kept for backward compat with old saved configs */
   tableId?: string;
+  /** When set, the labelColumn is read from this (typically dim) table and joined to the fact table server-side. */
+  labelTableId?: string;
   labelColumn: string;
   valueColumn: string;
   aggregation: Aggregation;
@@ -413,11 +416,41 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
   const [partialData, setPartialData] = useState(false);
 
   const ids = getTableIds(config);
+  const factId = ids[0];
+  const labelTableId = config.labelTableId && config.labelTableId !== factId ? config.labelTableId : undefined;
+  // When a separate label table is set, the chart-data endpoint pre-aggregates server-side,
+  // so the client-side reducer should not aggregate again.
+  const preAggregated = !!labelTableId && config.chartType !== 'scatter';
 
   useEffect(() => {
     setLoading(true);
     setError(null);
     setPartialData(false);
+
+    // Joined path: fact table + dim table on the server, with FK→PK join + GROUP BY
+    if (labelTableId && factId) {
+      api.getChartData({
+        factTableId: factId,
+        labelTableId,
+        labelColumn: config.labelColumn,
+        valueColumn: config.valueColumn,
+        aggregation: config.aggregation,
+        topN: config.topN,
+        dateGrouping: config.dateGrouping,
+        chartType: config.chartType,
+      })
+        .then((res) => {
+          if (res.success && res.data) {
+            setData(res.data.rows);
+          } else {
+            setError(res.error ?? 'Failed to load chart data');
+            setData([]);
+          }
+        })
+        .catch(() => setData([]))
+        .finally(() => setLoading(false));
+      return;
+    }
 
     // Check for column type conflicts across selected tables
     if (ids.length > 1) {
@@ -452,7 +485,7 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       })
       .catch(() => setData([]))
       .finally(() => setLoading(false));
-  }, [ids.join(',')]);
+  }, [ids.join(','), labelTableId, config.labelColumn, config.valueColumn, config.aggregation, config.topN, config.dateGrouping, config.chartType]);
 
   const s = config.style ?? DEFAULT_STYLE;
 
@@ -488,20 +521,32 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
     }
 
     const dg = config.dateGrouping ?? 'none';
-    const groups: Record<string, number[]> = {};
-    for (const row of filteredData) {
-      const label = dg !== 'none' ? resolveDateLabel(row[config.labelColumn], dg) : resolveLabel(row[config.labelColumn]);
-      const val = resolveValue(row[config.valueColumn]);
-      if (!groups[label]) groups[label] = [];
-      if (val !== null) groups[label].push(val);
+    let entries: (readonly [string, number])[];
+
+    if (preAggregated) {
+      // Server already grouped, aggregated, date-grouped, sorted, and applied topN.
+      entries = filteredData
+        .map(row => {
+          const label = resolveLabel(row[config.labelColumn]);
+          const val = resolveValue(row[config.valueColumn]) ?? 0;
+          return [label, val] as const;
+        });
+    } else {
+      const groups: Record<string, number[]> = {};
+      for (const row of filteredData) {
+        const label = dg !== 'none' ? resolveDateLabel(row[config.labelColumn], dg) : resolveLabel(row[config.labelColumn]);
+        const val = resolveValue(row[config.valueColumn]);
+        if (!groups[label]) groups[label] = [];
+        if (val !== null) groups[label].push(val);
+      }
+      const limit = config.topN ?? 0;
+      const mapped = Object.entries(groups)
+        .map(([label, vals]) => [label, aggregate(vals, config.aggregation)] as const);
+      const sorted = dg !== 'none'
+        ? mapped.sort((a, b) => a[0].localeCompare(b[0]))
+        : mapped.sort((a, b) => b[1] - a[1]);
+      entries = limit > 0 ? sorted.slice(0, limit) : sorted;
     }
-    const limit = config.topN ?? 0;
-    const mapped = Object.entries(groups)
-      .map(([label, vals]) => [label, aggregate(vals, config.aggregation)] as const);
-    const sorted = dg !== 'none'
-      ? mapped.sort((a, b) => a[0].localeCompare(b[0]))
-      : mapped.sort((a, b) => b[1] - a[1]);
-    const entries = limit > 0 ? sorted.slice(0, limit) : sorted;
     const colors = s.chartColors.length > 0 ? s.chartColors : DEFAULT_COLORS;
     return {
       labels: entries.map(([l]) => l),
@@ -1410,11 +1455,15 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
         op: (f.op as FilterOp) ?? '=',
         value: typeof f.value === 'string' ? f.value : f.value != null ? String(f.value) : '',
       }));
+    const labelTableId = typeof d.labelTableId === 'string' && d.labelTableId.length > 0
+      ? d.labelTableId
+      : undefined;
     return {
       id: crypto.randomUUID(),
       widgetType: 'chart',
       chartType: (d.chartType as ChartType) ?? 'bar',
       tableIds: ids,
+      labelTableId,
       labelColumn: (d.labelColumn as string) ?? '',
       valueColumn: (d.valueColumn as string) ?? '',
       aggregation: (d.aggregation as Aggregation) ?? 'sum',
@@ -1951,6 +2000,134 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
   );
 }
 
+// ── Share Button + Dialog ──
+
+function ShareButton({ dashboardId }: { dashboardId: string }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Look up an existing share whenever the dashboard id changes.
+  useEffect(() => {
+    setToken(null);
+    setCopied(false);
+    api.getDashboardShare(dashboardId).then((res) => {
+      if (res.success && res.data?.share) setToken(res.data.share.token);
+    });
+  }, [dashboardId]);
+
+  const shareUrl = token ? `${window.location.origin}/share/${token}` : '';
+
+  const handleCreate = async () => {
+    setLoading(true);
+    const res = await api.createDashboardShare(dashboardId);
+    setLoading(false);
+    if (res.success && res.data) setToken(res.data.share.token);
+  };
+
+  const handleRevoke = async () => {
+    if (!confirm('Revoke this share link? Anyone with the link will lose access.')) return;
+    setLoading(true);
+    const res = await api.revokeDashboardShare(dashboardId);
+    setLoading(false);
+    if (res.success) setToken(null);
+  };
+
+  const handleCopy = async () => {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* ignore */ }
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
+        </svg>
+        Share
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setOpen(false)}>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">Share dashboard</h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Anyone with the link can view the charts and text in this dashboard. Tables are not shared.
+                </p>
+              </div>
+              <button
+                onClick={() => setOpen(false)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="mt-4">
+              {token ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <input
+                      readOnly
+                      value={shareUrl}
+                      onFocus={(e) => e.currentTarget.select()}
+                      className="flex-1 text-xs border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-gray-700 font-mono"
+                    />
+                    <button
+                      onClick={handleCopy}
+                      className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors"
+                    >
+                      {copied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div className="mt-4 flex flex-col items-center gap-2">
+                    <div className="p-3 bg-white border border-gray-200 rounded-lg">
+                      <QRCodeSVG
+                        value={shareUrl}
+                        size={180}
+                        level="M"
+                        includeMargin={false}
+                      />
+                    </div>
+                    <p className="text-[11px] text-gray-500">Scan with a phone to open the dashboard</p>
+                  </div>
+                  <button
+                    onClick={handleRevoke}
+                    disabled={loading}
+                    className="mt-3 text-xs text-red-600 hover:text-red-700 disabled:opacity-50"
+                  >
+                    Revoke link
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleCreate}
+                  disabled={loading}
+                  className="w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  {loading ? 'Creating link…' : 'Create share link'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── Dashboard ──
 
 export default function Dashboard({ tables, onImport }: DashboardProps) {
@@ -2258,6 +2435,9 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
         <div className="w-px h-5 bg-gray-200" />
         <h2 className="text-sm font-semibold text-gray-700 truncate">{activeDashboard.name}</h2>
         <span className="text-[11px] text-gray-400">{widgets.length} widget{widgets.length !== 1 ? 's' : ''}</span>
+        <div className="ml-auto">
+          <ShareButton dashboardId={activeDashboard.id} />
+        </div>
       </div>
 
       {/* Canvas + Toolbox */}

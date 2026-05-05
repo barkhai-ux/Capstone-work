@@ -75,7 +75,8 @@ class GroqService {
   async analyzeForStarSchema(
     tableName: string,
     columns: ColumnSchema[],
-    sampleData: Record<string, unknown>[]
+    sampleData: Record<string, unknown>[],
+    columnStats?: { column: string; uniqueCount: number; totalRows: number; nullCount: number; topValues: { value: string; count: number }[] }[]
   ): Promise<GroqSchemaResponse> {
     const client = this.getClient();
 
@@ -83,11 +84,26 @@ class GroqService {
       (c) => `- "${c.name}" (type: ${c.type}, nullable: ${c.nullable})`
     ).join('\n');
 
-    const sampleRows = sampleData.slice(0, 5).map((row) =>
+    const sampleRows = sampleData.map((row) =>
       JSON.stringify(row, (_key, value) =>
         typeof value === 'bigint' ? Number(value) : value
       )
     ).join('\n');
+
+    const statsText = columnStats && columnStats.length > 0
+      ? columnStats.map((s) => {
+          const repetitionPct = s.totalRows > 0
+            ? Math.round((1 - s.uniqueCount / s.totalRows) * 100)
+            : 0;
+          const nullPct = s.totalRows > 0
+            ? Math.round((s.nullCount / s.totalRows) * 100)
+            : 0;
+          const topVals = s.topValues.slice(0, 5)
+            .map((v) => `"${v.value}" (${v.count}x)`)
+            .join(', ');
+          return `- "${s.column}": ${s.uniqueCount}/${s.totalRows} unique (${repetitionPct}% repetition), ${nullPct}% null. Top: ${topVals || '(none)'}`;
+        }).join('\n')
+      : '(no statistics provided)';
 
     const prompt = `You are a data modeling expert. Analyze this table and recommend a star schema design (fact table + dimension tables).
 
@@ -96,7 +112,10 @@ Table name: "${tableName}"
 Columns:
 ${columnDescriptions}
 
-Sample data (first 5 rows):
+Column statistics (cardinality + top values across the whole table):
+${statsText}
+
+Random sample of rows (NOT sorted — representative of the full table):
 ${sampleRows}
 
 Rules:
@@ -106,8 +125,8 @@ Rules:
 4. CRITICAL — Primary Key and Foreign Key detection (language-agnostic):
    - Identify columns that act as unique identifiers by BOTH name patterns AND data patterns:
      * Name patterns: suffixes like ID, id, No, Number, Code, Key, Ref, #, or their equivalents in ANY language
-     * Data patterns: a column whose sample values look like identifiers — sequential integers, unique codes, unique strings that don't repeat across rows
-   - Look at the sample data: if a column has all unique values in the sample and looks like an identifier (not a measure), it is likely a primary key.
+     * Data patterns: use the cardinality stats above. A column with unique/total ratio close to 1.0 (very low repetition) and a non-numeric appearance is almost certainly a primary key. A column with high repetition (>50%) is a dimension attribute, not a key.
+   - Combine both signals: name + cardinality. Don't flag a high-repetition column as a key just because its name ends in "id".
    - Column names may be in ANY language (English, Mongolian, Chinese, etc.) or from ANY domain (physics, chemistry, healthcare, etc.). Do NOT rely only on English naming conventions.
    - If a dimension group has an existing identifier column, set "primaryKey" to that column name. This existing key will be reused — do NOT create a new surrogate key.
    - If a column is already a foreign key referencing a dimension, keep that FK column in the fact table measures list — it will serve as the natural foreign key.
@@ -355,7 +374,12 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
   }
 
   async generateChartConfig(
-    tables: { name: string; id: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[],
+    tables: {
+      name: string; id: string;
+      columns: { name: string; type: string }[];
+      sampleData: Record<string, unknown>[];
+      columnStats?: { column: string; uniqueCount: number; totalRows: number; nullCount: number; topValues: { value: string; count: number }[] }[];
+    }[],
     prompt: string
   ): Promise<Record<string, unknown>> {
     const client = this.getClient();
@@ -363,12 +387,18 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
 
     const tablesDescription = tables.map((t) => {
       const cols = t.columns.map((c) => `  - "${c.name}" (${c.type})`).join('\n');
+      const stats = (t.columnStats ?? []).map(s => {
+        const rep = s.totalRows > 0 ? Math.round((1 - s.uniqueCount / s.totalRows) * 100) : 0;
+        const top = s.topValues.slice(0, 3).map(v => `"${v.value}"`).join(', ');
+        return `  - "${s.column}": ${s.uniqueCount}/${s.totalRows} unique (${rep}% repetition)${top ? `; top: ${top}` : ''}`;
+      }).join('\n');
       const rows = t.sampleData.slice(0, 5).map((row) =>
         JSON.stringify(row, (_key, value) =>
           typeof value === 'bigint' ? Number(value) : value
         )
       ).join('\n');
-      return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}\nSample data:\n${rows}`;
+      const statsBlock = stats ? `\nColumn cardinality:\n${stats}` : '';
+      return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}${statsBlock}\nRandom sample:\n${rows}`;
     }).join('\n\n---\n\n');
 
     const aiPrompt = `You are a dashboard chart configuration expert. Given the database tables below and the user's request, generate a chart widget configuration.
@@ -379,8 +409,15 @@ User request: "${sanitizedPrompt}"
 
 Rules:
 1. Choose the best chartType: "bar", "line", "area", "pie", "doughnut", "scatter", "radar", or "polarArea" based on the user's request. Use "scatter" for correlation analysis, "radar" for multi-metric comparisons, "polarArea" for proportional data with magnitude, "area" for trend visualization with filled regions.
-2. Pick the most relevant tableId (or tableIds as an array if data from multiple tables should be combined), labelColumn (categorical/text column for X-axis or categories), and valueColumn (numeric column for Y-axis or values).
-3. Pick aggregation: "sum", "avg", "count", "min", or "max" based on the user's intent.
+2. Pick the fact tableId (the table holding numeric measures, often named "fact_*"). The valueColumn must come from this fact table.
+3. STAR-SCHEMA AWARENESS — if the schema has fact_* and dim_* (or similar) tables:
+   - The fact table only has FK ids (e.g., "customer_id", "product_id"); the human-readable names live in the matching dim_* table.
+   - Set "labelTableId" to the dim table that contains the descriptive column the chart should be grouped by, and set "labelColumn" to that descriptive column (e.g., "customer_name", NOT "customer_id").
+   - Only set "labelTableId" when the labelColumn is in a different table from the fact table; if the label and value are in the same table, omit "labelTableId".
+4. COLUMN PICKING — use the cardinality stats above:
+   - labelColumn must be LOW-TO-MEDIUM cardinality (typically 2–50 unique values) OR a DATE/TIMESTAMP. Never pick a column with thousands of unique values (FK ids, transaction ids) as labelColumn — every bar would be one row.
+   - valueColumn must be numeric (INTEGER/DECIMAL/DOUBLE/FLOAT/BIGINT).
+5. Pick aggregation: "sum", "avg", "count", "min", or "max" based on the user's intent.
 4. Set topN: number of top items to show (0 = all, 5 = top 5, 10 = top 10, etc.). If the user says "top 5", "top 10", etc., set it accordingly. Default to 0 (all) if not specified.
 5. Set dateGrouping: "none", "yearly", "quarterly", or "monthly". If the labelColumn is a DATE or TIMESTAMP type and the chart is a line or bar chart, choose an appropriate grouping based on the data. If the user mentions yearly/monthly/quarterly, use that. Default to "none" for non-date columns.
 6. Generate a concise, descriptive title.
@@ -404,7 +441,8 @@ Rules:
 Respond ONLY with valid JSON:
 {
   "chartType": "bar",
-  "tableIds": ["the-table-id"],
+  "tableIds": ["fact-table-id"],
+  "labelTableId": "dim-table-id-or-omit-if-same-as-fact",
   "labelColumn": "column_name",
   "valueColumn": "column_name",
   "aggregation": "sum",
@@ -447,7 +485,12 @@ Respond ONLY with valid JSON:
   }
 
   async generateDashboard(
-    tables: { name: string; id: string; columns: { name: string; type: string }[]; sampleData: Record<string, unknown>[] }[],
+    tables: {
+      name: string; id: string;
+      columns: { name: string; type: string }[];
+      sampleData: Record<string, unknown>[];
+      columnStats?: { column: string; uniqueCount: number; totalRows: number; nullCount: number; topValues: { value: string; count: number }[] }[];
+    }[],
     prompt: string
   ): Promise<Record<string, unknown>[]> {
     const client = this.getClient();
@@ -455,12 +498,18 @@ Respond ONLY with valid JSON:
 
     const tablesDescription = tables.map((t) => {
       const cols = t.columns.map((c) => `  - "${c.name}" (${c.type})`).join('\n');
-      const rows = t.sampleData.slice(0, 5).map((row) =>
+      const stats = (t.columnStats ?? []).map(s => {
+        const rep = s.totalRows > 0 ? Math.round((1 - s.uniqueCount / s.totalRows) * 100) : 0;
+        const top = s.topValues.slice(0, 3).map(v => `"${v.value}"`).join(', ');
+        return `  - "${s.column}": ${s.uniqueCount}/${s.totalRows} unique (${rep}% repetition)${top ? `; top: ${top}` : ''}`;
+      }).join('\n');
+      const rows = t.sampleData.slice(0, 8).map((row) =>
         JSON.stringify(row, (_key, value) =>
           typeof value === 'bigint' ? Number(value) : value
         )
       ).join('\n');
-      return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}\nSample data:\n${rows}`;
+      const statsBlock = stats ? `\nColumn cardinality (use to pick label vs value columns):\n${stats}` : '';
+      return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}${statsBlock}\nRandom sample:\n${rows}`;
     }).join('\n\n---\n\n');
 
     const aiPrompt = `You are a professional BI dashboard designer. Given the database tables below and the user's request, design a complete dashboard with multiple chart widgets that provide comprehensive insights.
@@ -477,9 +526,20 @@ Design a dashboard with 4-8 well-chosen widgets. Mix different chart types for v
 - Correlation analysis (scatter for numeric relationships)
 - A text widget with a brief dashboard summary/insight
 
+STAR-SCHEMA AWARENESS — if the schema has fact_* and dim_* (or similar) tables:
+- Fact tables hold measures + FK ids; descriptive names (customer name, product name, region) live in the matching dim_* table.
+- For each chart widget, set "tableIds" to the FACT table id (where the valueColumn lives). If the labelColumn is in a different table (a dim_* table with the human-readable name), set "labelTableId" to that dim table id and "labelColumn" to its descriptive column — NEVER to a raw FK id like "customer_id" when a dim table with "customer_name" exists.
+- If the label and value live in the same table, omit "labelTableId".
+
+COLUMN PICKING — use the cardinality stats above:
+- labelColumn must be LOW-TO-MEDIUM cardinality (typically 2–50 unique values, e.g. Category, Region, Segment) OR a DATE/TIMESTAMP column. Never pick a column with thousands of unique values (FK ids, customer names from a 50k-row dataset, transaction ids) as a labelColumn — every bar would be one row and the chart would be unreadable.
+- valueColumn must be numeric (INTEGER/DECIMAL/DOUBLE/FLOAT/BIGINT) — never categorical.
+- For the same dataset, prefer making 2–3 different widgets that group by DIFFERENT categorical columns (e.g., by Category, by Region, by Segment) over multiple widgets that all group by the same column.
+- If the only "names" available are high-cardinality (unique per row), fall back to grouping by a coarser categorical column instead.
+
 For each widget, provide:
 - widgetType: "chart" or "text"
-- For chart widgets: chartType ("bar", "line", "area", "pie", "doughnut", "scatter", "radar", "polarArea"), tableIds (array of table IDs — use multiple when combining data from several tables), labelColumn, valueColumn, aggregation ("sum", "avg", "count", "min", "max"), topN (0=all, 5, 10, etc.), dateGrouping ("none", "yearly", "quarterly", "monthly" — use an appropriate grouping when the labelColumn is a DATE/TIMESTAMP type, default "none" for non-date columns)
+- For chart widgets: chartType ("bar", "line", "area", "pie", "doughnut", "scatter", "radar", "polarArea"), tableIds (array — usually one fact table id), labelTableId (the dim table id when labelColumn is in a different table; otherwise omit), labelColumn, valueColumn, aggregation ("sum", "avg", "count", "min", "max"), topN (0=all, 5, 10, etc.), dateGrouping ("none", "yearly", "quarterly", "monthly" — use an appropriate grouping when the labelColumn is a DATE/TIMESTAMP type, default "none" for non-date columns)
 - For text widgets: content (2-3 sentences summarizing a key insight about the data)
 - title: descriptive title
 - style: object with these fields:
@@ -504,7 +564,8 @@ Respond ONLY with a valid JSON array:
   {
     "widgetType": "chart",
     "chartType": "bar",
-    "tableIds": ["id"],
+    "tableIds": ["fact-table-id"],
+    "labelTableId": "dim-table-id-or-omit-if-same-as-fact",
     "labelColumn": "col",
     "valueColumn": "col",
     "aggregation": "sum",

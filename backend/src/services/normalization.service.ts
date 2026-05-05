@@ -9,6 +9,7 @@ import {
 } from '../types/index.js';
 import logger from '../utils/logger.js';
 import { findIdColumn } from '../utils/key-detection.js';
+import { getCurrentDatabaseId } from '../middleware/auth.js';
 
 class NormalizationService {
   async analyzeTable(tableId: string): Promise<NormalizationAnalysis> {
@@ -24,14 +25,13 @@ class NormalizationService {
       columnStats.push({ column: column.name, ...stats });
     }
 
-    // Get sample data
-    const paginated = await duckdbService.getTableData(table.name, 1, 20);
+    // Random sample so the AI sees a representative slice, not the first N rows
+    const sampleData = await duckdbService.getRandomSample(table.name, 15);
 
-    // Ask Groq AI for recommendations
     const aiResult = await groqService.analyzeForNormalization(
       table.name,
       table.columns,
-      paginated.data,
+      sampleData,
       columnStats
     );
 
@@ -111,6 +111,8 @@ class NormalizationService {
       throw new Error(`Table with ID ${tableId} not found`);
     }
 
+    const databaseId = getCurrentDatabaseId();
+
     // Preserve a snapshot of the original table for charting
     const snapshotName = `original_${table.name}`;
     if (!(await duckdbService.tableExists(snapshotName))) {
@@ -118,7 +120,7 @@ class NormalizationService {
         `CREATE TABLE "${snapshotName}" AS SELECT * FROM "${table.name}"`
       );
       const snapshotId = uuidv4();
-      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${table.name}`);
+      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${table.name}`, databaseId);
       logger.info(`Preserved original table as "${snapshotName}" for charting`);
     }
 
@@ -156,7 +158,7 @@ class NormalizationService {
 
       // Register lookup table in metadata
       const lookupId = uuidv4();
-      await duckdbService.registerTable(lookupId, lookupTableName, `normalized_from_${table.name}`);
+      await duckdbService.registerTable(lookupId, lookupTableName, `normalized_from_${table.name}`, databaseId);
 
       lookupTablesCreated.push(lookupTableName);
       columnsNormalized.push(columnName);
@@ -235,6 +237,8 @@ class NormalizationService {
       throw new Error(`Table with ID ${tableId} not found`);
     }
 
+    const databaseId = getCurrentDatabaseId();
+
     // Preserve a snapshot of the original table for charting
     const snapshotName = `original_${table.name}`;
     if (!(await duckdbService.tableExists(snapshotName))) {
@@ -242,7 +246,7 @@ class NormalizationService {
         `CREATE TABLE "${snapshotName}" AS SELECT * FROM "${table.name}"`
       );
       const snapshotId = uuidv4();
-      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${table.name}`);
+      await duckdbService.registerTable(snapshotId, snapshotName, `snapshot_of_${table.name}`, databaseId);
       logger.info(`Preserved original table as "${snapshotName}" for charting`);
     }
 
@@ -317,7 +321,7 @@ class NormalizationService {
 
       // Register dimension table in metadata
       const dimId = uuidv4();
-      await duckdbService.registerTable(dimId, dimTableName, `dimension_from_${table.name}`);
+      await duckdbService.registerTable(dimId, dimTableName, `dimension_from_${table.name}`, databaseId);
 
       dimensionTablesCreated.push(dimTableName);
       dimExistingPKs.set(dimTableName, existingPK);

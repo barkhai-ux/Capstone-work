@@ -187,6 +187,41 @@ const COLD_START_BASE_DELAY_MS = 1500;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+async function publicRequest<T>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
+  // Public endpoint — no Authorization or X-Database-Id headers. Visitors
+  // hitting a /share/:token link aren't logged in.
+  return rawRequest<T>(url, { cache: 'no-store', ...options });
+}
+
+async function rawRequest<T>(url: string, init: RequestInit): Promise<ApiResponse<T>> {
+  let attempt = 0;
+  while (true) {
+    let res: Response;
+    try {
+      res = await fetch(url, init);
+    } catch (err) {
+      if (attempt < COLD_START_MAX_RETRIES) {
+        await sleep(COLD_START_BASE_DELAY_MS * Math.pow(2, attempt));
+        attempt++;
+        continue;
+      }
+      throw err;
+    }
+
+    const contentType = res.headers.get('content-type') ?? '';
+    const isJson = contentType.includes('application/json');
+    const isColdStart = !isJson && (res.status === 404 || res.status >= 500);
+    if (isColdStart && attempt < COLD_START_MAX_RETRIES) {
+      await sleep(COLD_START_BASE_DELAY_MS * Math.pow(2, attempt));
+      attempt++;
+      continue;
+    }
+    if (isJson) return res.json();
+    const text = await res.text();
+    return { success: false, error: text || `HTTP ${res.status}` } as ApiResponse<T>;
+  }
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
   let attempt = 0;
   // Bypass the HTTP cache. We do our own stale-while-revalidate in
@@ -381,6 +416,24 @@ export const api = {
     });
   },
 
+  // Joined chart data: aggregate value from fact table grouped by label from a (possibly different) table
+  getChartData(body: {
+    factTableId: string;
+    labelTableId?: string;
+    labelColumn: string;
+    valueColumn?: string;
+    aggregation?: 'sum' | 'avg' | 'count' | 'min' | 'max';
+    topN?: number;
+    dateGrouping?: 'none' | 'yearly' | 'quarterly' | 'monthly';
+    chartType?: string;
+  }): Promise<ApiResponse<{ rows: Record<string, unknown>[]; labelColumn: string; valueColumn: string }>> {
+    return request(`${API_BASE}/chart/data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+
   // Natural language query (no table selection needed — AI picks from all tables)
   queryData(question: string, history?: { role: 'user' | 'assistant'; content: string }[]): Promise<ApiResponse<QueryResult>> {
     return request(`${API_BASE}/query`, {
@@ -446,6 +499,38 @@ export const api = {
 
   deleteDashboard(id: string): Promise<ApiResponse<{ deleted: boolean }>> {
     return request(`${API_BASE}/dashboards/${id}`, { method: 'DELETE' });
+  },
+
+  // Dashboard sharing (auth-gated)
+  getDashboardShare(dashboardId: string): Promise<ApiResponse<{ share: { token: string; created_at: string } | null }>> {
+    return request(`${API_BASE}/dashboards/${dashboardId}/share`);
+  },
+
+  createDashboardShare(dashboardId: string): Promise<ApiResponse<{ share: { token: string; created_at: string } }>> {
+    return request(`${API_BASE}/dashboards/${dashboardId}/share`, { method: 'POST' });
+  },
+
+  revokeDashboardShare(dashboardId: string): Promise<ApiResponse<{ revoked: boolean }>> {
+    return request(`${API_BASE}/dashboards/${dashboardId}/share`, { method: 'DELETE' });
+  },
+
+  // Public share viewer (no auth)
+  getPublicSharedDashboard(token: string): Promise<ApiResponse<{ name: string; widgets: Record<string, unknown>[]; layouts: Record<string, unknown> }>> {
+    return publicRequest(`${API_BASE}/public/share/${encodeURIComponent(token)}`);
+  },
+
+  getPublicSharedWidgetData(
+    token: string,
+    widgetId: string
+  ): Promise<ApiResponse<
+    | { type: 'joined'; rows: Record<string, unknown>[]; labelColumn: string; valueColumn: string }
+    | { type: 'raw'; rows: Record<string, unknown>[]; partialData: boolean }
+  >> {
+    return publicRequest(`${API_BASE}/public/share/${encodeURIComponent(token)}/widget-data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ widgetId }),
+    });
   },
 
   // Databases (user-named workspaces)
