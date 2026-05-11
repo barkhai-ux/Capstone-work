@@ -483,6 +483,20 @@ class DuckDBService {
     return Number(result[0]?.count || 0) > 0;
   }
 
+  /** Lightweight metadata lookup — does not touch the actual DuckDB table.
+   *  Returns null if no row exists. Used to disambiguate name collisions
+   *  across the user's logical databases. */
+  async getTableMetadata(
+    tableName: string
+  ): Promise<{ id: string; name: string; databaseId: string | null } | null> {
+    const rows = await this.all<{ id: string; name: string; database_id: string | null }>(
+      `SELECT id, name, database_id FROM _table_metadata WHERE name = $1 LIMIT 1`,
+      { '1': tableName }
+    );
+    if (rows.length === 0) return null;
+    return { id: rows[0].id, name: rows[0].name, databaseId: rows[0].database_id };
+  }
+
   async close(): Promise<void> {
     for (const [, db] of this.dbs) {
       try { db.connection.closeSync(); } catch { /* noop */ }

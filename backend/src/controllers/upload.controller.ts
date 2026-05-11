@@ -7,6 +7,7 @@ import { sendSuccess, sendCreated, sendBadRequest, sendNotFound } from '../utils
 import { fileParserService } from '../services/file-parser.service.js';
 import { schemaDetectorService } from '../services/schema-detector.service.js';
 import { duckdbService } from '../services/duckdb.service.js';
+import { supabaseAdmin } from '../services/supabase.service.js';
 import { userTablesService } from '../services/user-tables.service.js';
 import { uploadFileSchema, fileIdSchema } from '../services/validation.service.js';
 import { config, getAbsolutePath } from '../config/index.js';
@@ -120,9 +121,30 @@ export const commitUpload = asyncHandler(async (req: Request, res: Response) => 
   const finalTableName =
     tableName || schemaDetectorService.sanitizeTableName(preview.fileName);
 
-  // Check if table already exists
-  if (await duckdbService.tableExists(finalTableName)) {
-    return sendBadRequest(res, `Table "${finalTableName}" already exists. Choose a different name.`);
+  // Check if table already exists. Names are unique per-user across all
+  // logical databases, so a clash may live in a database the user isn't
+  // currently viewing — surface where it lives so they can fix it.
+  const existing = await duckdbService.getTableMetadata(finalTableName);
+  if (existing) {
+    let where = 'in this workspace';
+    if (existing.databaseId && existing.databaseId === databaseId) {
+      where = 'in this database';
+    } else if (existing.databaseId) {
+      const { data } = await supabaseAdmin
+        .from('databases')
+        .select('name')
+        .eq('id', existing.databaseId)
+        .maybeSingle();
+      where = data?.name
+        ? `in another database ("${data.name}")`
+        : `in another database (id ${existing.databaseId})`;
+    } else {
+      where = 'as an orphaned entry not tied to any database';
+    }
+    return sendBadRequest(
+      res,
+      `Table "${finalTableName}" already exists ${where}. Choose a different name or remove the existing table.`
+    );
   }
 
   try {
