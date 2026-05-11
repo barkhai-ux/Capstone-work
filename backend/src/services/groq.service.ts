@@ -768,5 +768,68 @@ For "table" responseType, omit the chartConfig field.`;
   }
 }
 
-export const groqService = new GroqService();
+// Augmenting the class via prototype to keep the diff isolated.
+declare module './groq.service.js' {
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  interface GroqServiceCleaningSummary {}
+}
+
+interface CleaningSummaryInput {
+  tableName: string;
+  rowCount: number;
+  qualityScore: number;
+  totalIssues: number;
+  byKind: Record<string, number>;
+  columns: { name: string; type: string; nullCount: number; distinctCount: number; samples: string[] }[];
+}
+
+(GroqService.prototype as unknown as {
+  generateCleaningSummary(input: CleaningSummaryInput): Promise<string>;
+}).generateCleaningSummary = async function (input: CleaningSummaryInput): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const client = (this as any).getClient() as Groq;
+
+  const colLines = input.columns
+    .filter((c) => c.nullCount > 0 || c.samples.length === 0 || c.distinctCount < 3)
+    .slice(0, 10)
+    .map((c) => `- "${c.name}" (${c.type}): ${c.nullCount} nulls, ${c.distinctCount} distinct, samples: ${c.samples.join(' | ') || '(empty)'}`)
+    .join('\n');
+
+  const issuesText = Object.entries(input.byKind)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `- ${k.replace('_', ' ')}: ${n}`)
+    .join('\n') || '- (none)';
+
+  const prompt = `Summarize the data quality of this table in 2 short sentences for a non-technical user.
+
+Table: "${input.tableName}"
+Rows: ${input.rowCount}
+Data quality score: ${input.qualityScore}%
+Total issues: ${input.totalIssues}
+
+Issues by category:
+${issuesText}
+
+Notable columns:
+${colLines || '(no notable columns)'}
+
+Write a friendly, plain-English summary. No technical jargon. Mention the most important fix to apply first if any. Max 2 sentences. Respond with plain text only — no JSON, no markdown.`;
+
+  const response = await client.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: 'You are a friendly data assistant. You write short, plain-English summaries.' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0.3,
+    max_tokens: 200,
+  });
+
+  const content = response.choices[0]?.message?.content?.trim() ?? '';
+  return content.slice(0, 400);
+};
+
+export const groqService = new GroqService() as GroqService & {
+  generateCleaningSummary(input: CleaningSummaryInput): Promise<string>;
+};
 export default groqService;

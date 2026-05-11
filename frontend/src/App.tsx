@@ -4,10 +4,12 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import TableGrid from './components/TableGrid';
 import AskData from './components/AskData';
+import DataCleaning from './components/DataCleaning';
 import UploadModal from './components/UploadModal';
 import NormalizationModal from './components/NormalizationModal';
 import StarSchemaModal from './components/StarSchemaModal';
 import AuthPage from './components/AuthPage';
+import LandingPage from './components/LandingPage';
 import { Toast, ToastState } from './components/Toast';
 import { useAuth } from './auth';
 import { Conversation, loadConversations, saveConversations } from './lib/conversations';
@@ -28,7 +30,8 @@ export default function App() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ message, type, id: Date.now() });
-  const [view, setView] = useState<'dashboard' | 'table' | 'ask-data'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'table' | 'ask-data' | 'data-cleaning'>('dashboard');
+  const [unauthView, setUnauthView] = useState<{ kind: 'landing' } | { kind: 'auth'; mode: 'signin' | 'signup' }>({ kind: 'landing' });
   const [modal, setModal] = useState<ModalState>({ type: null });
   const [loading, setLoading] = useState(true);
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
@@ -167,7 +170,20 @@ export default function App() {
   }
 
   if (!session) {
-    return <AuthPage />;
+    if (unauthView.kind === 'landing') {
+      return (
+        <LandingPage
+          onSignIn={() => setUnauthView({ kind: 'auth', mode: 'signin' })}
+          onSignUp={() => setUnauthView({ kind: 'auth', mode: 'signup' })}
+        />
+      );
+    }
+    return (
+      <AuthPage
+        initialMode={unauthView.mode}
+        onBack={() => setUnauthView({ kind: 'landing' })}
+      />
+    );
   }
 
   const selectedTable = tables.find((t) => t.id === selectedId) ?? null;
@@ -267,6 +283,7 @@ export default function App() {
 
   const viewLabel =
     view === 'ask-data' ? 'Ask Your Data'
+    : view === 'data-cleaning' ? 'Data Cleaning'
     : view === 'table' && selectedTable ? selectedTable.name
     : 'Dashboard';
 
@@ -281,6 +298,10 @@ export default function App() {
         onSelect={(id) => { setSelectedId(id); setView('table'); }}
         onDashboard={() => { setView('dashboard'); setSelectedId(null); }}
         onAskData={() => { setView('ask-data'); setSelectedId(null); }}
+        onDataCleaning={() => {
+          if (!selectedId && tables.length > 0) setSelectedId(tables[0].id);
+          setView('data-cleaning');
+        }}
         onImport={() => setModal({ type: 'upload' })}
         onDelete={handleDelete}
         onNormalize={openNormalize}
@@ -343,6 +364,13 @@ export default function App() {
               activeId={activeConversationId}
               setConversations={setConversations}
               setActiveId={setActiveConversationId}
+              tables={tables}
+            />
+          ) : view === 'data-cleaning' && selectedTable ? (
+            <DataCleaning
+              table={selectedTable}
+              onBack={() => setView('table')}
+              onToast={(msg, type) => showToast(msg, type ?? 'success')}
             />
           ) : view === 'table' && selectedTable ? (
             <TableGrid

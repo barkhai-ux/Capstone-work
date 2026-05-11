@@ -10,6 +10,7 @@ import dashboardsRoutes from './dashboards.routes.js';
 import databasesRoutes from './databases.routes.js';
 import shareRoutes from './share.routes.js';
 import publicRoutes from './public.routes.js';
+import cleaningRoutes from './cleaning.routes.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -39,5 +40,6 @@ router.use('/snippets', requireAuth, snippetsRoutes);
 router.use('/dashboards', requireAuth, dashboardsRoutes);
 router.use('/dashboards', requireAuth, shareRoutes);
 router.use('/databases', requireAuth, databasesRoutes);
+router.use('/cleaning', requireAuth, cleaningRoutes);
 
 export default router;

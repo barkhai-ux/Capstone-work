@@ -633,7 +633,7 @@ function ChartWidget({ config, tables, onEdit, onDelete }: {
       className="h-full flex flex-col overflow-hidden group shadow-sm hover:shadow-md transition-shadow cursor-pointer"
       style={{ background: s.bgColor, border: `1px solid ${s.borderColor}`, borderRadius: s.borderRadius }}
       onMouseDown={() => { draggedRef.current = false; }}
-      onMouseMove={() => { draggedRef.current = true; }}
+      onMouseMove={(e) => { if (e.buttons > 0) draggedRef.current = true; }}
       onClick={() => { if (!draggedRef.current) onEdit(); }}
     >
       <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0 drag-handle cursor-grab active:cursor-grabbing">
@@ -759,7 +759,7 @@ function DataTableWidget({ config, onEdit, onDelete, onUpdate }: {
       style={{ background: s.bgColor, border: `1px solid ${s.borderColor}`, borderRadius: s.borderRadius }}
       onDrop={handleDrop} onDragOver={handleDragOver}
       onMouseDown={() => { draggedRef.current = false; }}
-      onMouseMove={() => { draggedRef.current = true; }}
+      onMouseMove={(e) => { if (e.buttons > 0) draggedRef.current = true; }}
       onClick={() => { if (!draggedRef.current) onEdit(); }}>
       <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0 drag-handle cursor-grab active:cursor-grabbing">
         <div className="min-w-0">
@@ -1039,6 +1039,75 @@ function MiniWidgetContent({ widget, tableData }: {
   );
 }
 
+// ── Recent Charts Strip (used in empty editor canvas) ──
+
+function RecentChartsStrip({ widgets, tables, onClone }: {
+  widgets: ChartWidgetConfig[];
+  tables: TableInfo[];
+  onClone: (cfg: ChartWidgetConfig) => void;
+}) {
+  const [tableData, setTableData] = useState<Map<string, Record<string, unknown>[]>>(() => new Map());
+  const widgetIdsKey = widgets.map(w => w.id).join(',');
+
+  useEffect(() => {
+    if (widgets.length === 0) return;
+    const needed = new Set<string>();
+    for (const w of widgets) {
+      for (const id of getTableIds(w)) {
+        if (tables.some(t => t.id === id)) needed.add(id);
+      }
+    }
+    const toFetch = [...needed].filter(id => !previewTableCache.has(id));
+    const populate = () => {
+      setTableData(new Map([...needed].map(id => [id, previewTableCache.get(id) ?? []])));
+    };
+    if (toFetch.length === 0) { populate(); return; }
+
+    let cancelled = false;
+    Promise.all(
+      toFetch.map(id =>
+        api.getTableData(id, 1, PREVIEW_ROW_LIMIT)
+          .then(res => ({ id, rows: (res.success && res.data ? res.data.rows : []) as Record<string, unknown>[] }))
+          .catch(() => ({ id, rows: [] as Record<string, unknown>[] }))
+      )
+    ).then(results => {
+      if (cancelled) return;
+      for (const { id, rows } of results) previewTableCache.set(id, rows);
+      populate();
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widgetIdsKey, tables]);
+
+  if (widgets.length === 0) return null;
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-[12px] font-semibold text-gray-700">Recently added charts</h3>
+        <span className="text-[11px] text-gray-400">Click to add to this dashboard</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {widgets.map(w => (
+          <button
+            key={w.id}
+            onClick={() => onClone({ ...w, id: crypto.randomUUID() })}
+            className="group flex flex-col text-left rounded-xl border border-gray-200 bg-white tile-shadow hover:border-accent hover:shadow-md transition-all overflow-hidden"
+          >
+            <div className="h-24 px-2 pt-2 bg-gradient-to-br from-slate-50 to-white">
+              <MiniWidgetContent widget={w} tableData={tableData} />
+            </div>
+            <div className="px-3 py-2 border-t border-gray-100">
+              <p className="text-[12px] font-semibold text-gray-700 truncate">{w.title || `${w.valueColumn} by ${w.labelColumn}`}</p>
+              <p className="text-[10.5px] text-gray-400 capitalize mt-0.5">{w.chartType} · {w.aggregation}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Dashboard Card Preview ──
 
 function DashboardCardPreview({ dashboard, tables }: {
@@ -1174,6 +1243,9 @@ function DashboardCardPreview({ dashboard, tables }: {
 
 // ── Dashboard Home (Power BI style card grid) ──
 
+type DashboardSortKey = 'updated' | 'name' | 'created';
+type DashboardOwnerFilter = 'all' | 'me';
+
 function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename }: {
   dashboards: DashboardInstance[];
   tables: TableInfo[];
@@ -1185,6 +1257,9 @@ function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [sortKey, setSortKey] = useState<DashboardSortKey>('updated');
+  const [ownerFilter, setOwnerFilter] = useState<DashboardOwnerFilter>('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const formatDate = (iso: string) => {
     const d = new Date(iso);
@@ -1211,25 +1286,90 @@ function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename
     return parts.length > 0 ? parts.join(', ') : 'Empty';
   };
 
+  const getKpiDots = (db: DashboardInstance) => {
+    const dots: { color: string; title: string }[] = [];
+    const counts = {
+      chart: db.widgets.filter(w => (w.widgetType ?? 'chart') === 'chart').length,
+      table: db.widgets.filter(w => w.widgetType === 'table').length,
+      text: db.widgets.filter(w => w.widgetType === 'text').length,
+    };
+    if (counts.chart) dots.push({ color: '#7c5cff', title: `${counts.chart} chart${counts.chart > 1 ? 's' : ''}` });
+    if (counts.table) dots.push({ color: '#22c55e', title: `${counts.table} table${counts.table > 1 ? 's' : ''}` });
+    if (counts.text) dots.push({ color: '#f59e0b', title: `${counts.text} text` });
+    return dots;
+  };
+
+  const visibleDashboards = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    let list = dashboards;
+    if (ownerFilter === 'me') list = list; // single-user app — same set
+    if (q) list = list.filter(d => d.name.toLowerCase().includes(q));
+    const sorted = [...list];
+    if (sortKey === 'name') {
+      sorted.sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortKey === 'created') {
+      sorted.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    } else {
+      sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+    return sorted;
+  }, [dashboards, sortKey, ownerFilter, searchQuery]);
+
   return (
     <div className="flex-1 overflow-auto" style={{ background: 'var(--page-bg)' }}>
       <div className="max-w-6xl mx-auto px-8 py-8">
         {/* Header */}
-        <div className="mb-6 flex items-end gap-4">
-          <div className="flex-1 min-w-0">
-            <div className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Workspace</div>
-            <h1 className="text-[22px] font-bold text-gray-900 tracking-tight mt-1">Dashboards</h1>
-            <p className="text-[13px] text-gray-500 mt-1">{dashboards.length} dashboard{dashboards.length === 1 ? '' : 's'} · {tables.length} table{tables.length === 1 ? '' : 's'} available</p>
+        <div className="mb-5">
+          <div className="flex items-start gap-4 flex-wrap">
+            <div className="flex-1 min-w-0">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Workspace</div>
+              <h1 className="text-[22px] font-bold text-gray-900 tracking-tight mt-1">Dashboards</h1>
+              <p className="text-[13px] text-gray-500 mt-1">Create and explore dashboards to visualize your data and share insights.</p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-gray-200 bg-white text-[12px] text-gray-500">
+                <span className="text-gray-400">Sort by</span>
+                <select
+                  value={sortKey}
+                  onChange={e => setSortKey(e.target.value as DashboardSortKey)}
+                  className="bg-transparent text-gray-700 font-medium focus:outline-none cursor-pointer"
+                >
+                  <option value="updated">Last updated</option>
+                  <option value="name">Name</option>
+                  <option value="created">Created</option>
+                </select>
+              </label>
+              <select
+                value={ownerFilter}
+                onChange={e => setOwnerFilter(e.target.value as DashboardOwnerFilter)}
+                className="h-9 px-2.5 rounded-lg border border-gray-200 bg-white text-[12px] text-gray-700 font-medium focus:outline-none cursor-pointer"
+              >
+                <option value="all">All owners</option>
+                <option value="me">Me</option>
+              </select>
+              <button
+                onClick={onNew}
+                className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg bg-accent text-white text-[13px] font-medium shadow-sm transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+                Create dashboard
+              </button>
+            </div>
           </div>
-          <button
-            onClick={onNew}
-            className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg bg-accent text-white text-[13px] font-medium shadow-sm transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          <div className="relative mt-4 max-w-sm">
+            <svg className="w-4 h-4 text-gray-300 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m1.6-5.4a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            New dashboard
-          </button>
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search dashboards..."
+              className="w-full h-9 pl-8 pr-3 rounded-lg border border-gray-200 bg-white text-[12.5px] text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
+            />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-2">{dashboards.length} dashboard{dashboards.length === 1 ? '' : 's'} · {tables.length} table{tables.length === 1 ? '' : 's'} available</p>
         </div>
 
         {/* Card grid */}
@@ -1237,18 +1377,25 @@ function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename
           {/* New Dashboard card */}
           <button
             onClick={onNew}
-            className="group flex flex-col items-center justify-center h-52 rounded-2xl dashed-card bg-white hover:border-accent hover:bg-accent-soft/40 transition-all cursor-pointer"
+            className="group flex flex-col items-center justify-center text-center h-52 rounded-2xl dashed-card bg-white hover:border-accent hover:bg-accent-soft/40 transition-all cursor-pointer px-4"
           >
             <div className="w-12 h-12 rounded-xl bg-accent-soft group-hover:bg-accent-soft-active flex items-center justify-center mb-3 transition-colors">
               <svg className="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
               </svg>
             </div>
-            <span className="text-[13px] font-medium text-gray-600 group-hover:text-accent-strong transition-colors">New Dashboard</span>
+            <span className="text-[13px] font-semibold text-gray-700 group-hover:text-accent-strong transition-colors">Create new dashboard</span>
+            <span className="text-[11px] text-gray-400 mt-1">Start from scratch or use a template</span>
+            <span className="mt-3 inline-flex items-center gap-1 h-7 px-3 rounded-lg bg-accent text-white text-[11.5px] font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+              Create dashboard
+            </span>
           </button>
 
           {/* Dashboard cards */}
-          {dashboards.map(db => (
+          {visibleDashboards.map(db => (
             <div
               key={db.id}
               className="group relative flex flex-col h-52 rounded-2xl border border-gray-200 bg-white tile-shadow hover:shadow-lg hover:border-accent transition-all cursor-pointer overflow-hidden fade-in"
@@ -1284,9 +1431,22 @@ function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename
                     {db.name}
                   </h3>
                 )}
-                <div className="flex items-center justify-between mt-1">
-                  <span className="text-[11px] text-gray-400">{getWidgetSummary(db)}</span>
-                  <span className="text-[10px] text-gray-300">{formatDate(db.createdAt)}</span>
+                <div className="flex items-center justify-between mt-1.5 gap-2">
+                  <div className="flex items-center gap-1 min-w-0" title={getWidgetSummary(db)}>
+                    {getKpiDots(db).length > 0 ? (
+                      getKpiDots(db).map((dot, i) => (
+                        <span
+                          key={i}
+                          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                          style={{ background: dot.color }}
+                        />
+                      ))
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-gray-200 flex-shrink-0" />
+                    )}
+                    <span className="text-[10.5px] text-gray-400 ml-1 truncate">{formatDate(db.createdAt)}</span>
+                  </div>
+                  <span className="text-[9.5px] font-semibold text-gray-400 px-1.5 py-px rounded bg-gray-100 flex-shrink-0">You</span>
                 </div>
               </div>
 
@@ -1323,7 +1483,25 @@ function DashboardHome({ dashboards, tables, onSelect, onNew, onDelete, onRename
               </div>
             </div>
           ))}
+
+          {/* "No more dashboards" placeholder — only when at least one real dashboard exists */}
+          {visibleDashboards.length > 0 && (
+            <div className="flex flex-col items-center justify-center text-center h-52 rounded-2xl dashed-card bg-white/60 px-4">
+              <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center mb-2">
+                <svg className="w-5 h-5 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                </svg>
+              </div>
+              <span className="text-[12px] font-semibold text-gray-500">No more dashboards</span>
+              <span className="text-[10.5px] text-gray-400 mt-0.5">Create a new one to visualize more data.</span>
+            </div>
+          )}
         </div>
+
+        {/* Empty filtered state */}
+        {visibleDashboards.length === 0 && dashboards.length > 0 && (
+          <div className="text-center text-[12px] text-gray-400 mt-6">No dashboards match your search.</div>
+        )}
       </div>
     </div>
   );
@@ -1437,6 +1615,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
 }) {
   const editingType: WidgetType = editing?.widgetType ?? 'chart';
   const [widgetType, setWidgetType] = useState<WidgetType>(editingType);
+  const [chartTab, setChartTab] = useState<'type' | 'data' | 'configure'>(editing ? 'configure' : 'type');
 
   // AI prompt state
   const [aiPrompt, setAiPrompt] = useState('');
@@ -1554,6 +1733,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       setWidgetType(editing.widgetType ?? 'chart');
       setTitle(editing.title);
       setStyle(editing.style ?? { ...DEFAULT_STYLE });
+      setChartTab('configure');
       if (editing.widgetType === 'chart') {
         setChartType(editing.chartType); setTableIds(getTableIds(editing));
         setLabelColumn(editing.labelColumn); setValueColumn(editing.valueColumn);
@@ -1613,7 +1793,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
 
   const cleanFilters = filters.filter((f) => f.column);
 
-  const handleSubmit = () => {
+  const handleSubmit = (keepForm = false) => {
     if (!canSubmit) return;
     if (widgetType === 'chart') {
       const cfg: ChartWidgetConfig = {
@@ -1647,8 +1827,62 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       };
       editing ? onUpdate(cfg) : onAdd(cfg);
     }
-    if (!editing) { setTitle(''); setTextContent(''); setFilters([]); }
+    if (!editing && !keepForm) { setTitle(''); setTextContent(''); setFilters([]); }
   };
+
+  // Live auto-apply edits: when editing an existing widget, push changes
+  // to the parent on a short debounce so the user doesn't have to click
+  // "Update Widget" after every tweak.
+  const editingIdRef = useRef<string | null>(editing?.id ?? null);
+  const skipNextAutoUpdate = useRef(false);
+  useEffect(() => {
+    if (editing?.id !== editingIdRef.current) {
+      editingIdRef.current = editing?.id ?? null;
+      skipNextAutoUpdate.current = true;
+    }
+  }, [editing?.id]);
+
+  useEffect(() => {
+    if (!editing) return;
+    if (skipNextAutoUpdate.current) {
+      skipNextAutoUpdate.current = false;
+      return;
+    }
+    if (!canSubmit) return;
+    const t = setTimeout(() => {
+      if (widgetType === 'chart') {
+        onUpdate({
+          id: editing.id,
+          widgetType: 'chart',
+          chartType, tableIds, labelColumn, valueColumn, aggregation, topN, dateGrouping,
+          filters: cleanFilters,
+          title: title || `${valueColumn} by ${labelColumn}`,
+          style,
+        });
+      } else if (widgetType === 'text') {
+        onUpdate({
+          id: editing.id,
+          widgetType: 'text',
+          title: title || 'Text',
+          content: textContent,
+          style,
+        });
+      } else if (widgetType === 'table') {
+        onUpdate({
+          id: editing.id,
+          widgetType: 'table',
+          tableId: editing.widgetType === 'table' ? editing.tableId : '',
+          columns: editing.widgetType === 'table' ? editing.columns : [],
+          filters: cleanFilters,
+          title: title || 'Table',
+          maxRows,
+          style,
+        });
+      }
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, widgetType, chartType, tableIds.join(','), labelColumn, valueColumn, aggregation, topN, dateGrouping, JSON.stringify(cleanFilters), textContent, maxRows, title, JSON.stringify(style), canSubmit]);
 
   const isAxisChart = chartType === 'bar' || chartType === 'line' || chartType === 'area' || chartType === 'scatter';
 
@@ -1713,6 +1947,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
           </div>
           <div className="flex gap-1.5">
             <input
+              data-ai-prompt
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAiGenerate(); } }}
@@ -1741,12 +1976,56 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
         {/* ── Chart Builder ── */}
         {widgetType === 'chart' && (
           <>
-            {/* Table selector — single dropdown, auto-selects original */}
-            <div className="px-4 pb-3">
+            {/* Tab bar: jumps to section anchors below */}
+            <div className="px-4 pb-3 sticky top-0 z-10 bg-white pt-1">
+              <div className="flex gap-1 p-1 rounded-lg bg-gray-100">
+                {([
+                  { value: 'type' as const, label: 'Chart Type', anchor: 'toolbox-section-type' },
+                  { value: 'data' as const, label: 'Data', anchor: 'toolbox-section-data' },
+                  { value: 'configure' as const, label: 'Configure', anchor: 'toolbox-section-configure' },
+                ]).map(t => (
+                  <button
+                    key={t.value}
+                    onClick={() => {
+                      setChartTab(t.value);
+                      const el = document.getElementById(t.anchor);
+                      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }}
+                    className={`flex-1 py-1.5 rounded-md text-[11px] font-semibold transition-all ${
+                      chartTab === t.value
+                        ? 'bg-white text-accent-strong shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Section: Chart Type */}
+            <div id="toolbox-section-type" className="px-4 pb-3 scroll-mt-14" data-toolbox-chart-types>
+              <p className="text-[10px] text-gray-400 mb-2 uppercase tracking-wider font-semibold">Choose chart type</p>
+              <div className="grid grid-cols-4 gap-1.5">
+                {CHART_TYPES.map((ct) => (
+                  <button key={ct.value} onClick={() => setChartType(ct.value)}
+                    className={`flex flex-col items-center gap-0.5 py-2.5 rounded-lg border text-[10px] transition-all ${
+                      chartType === ct.value ? 'border-accent bg-accent-soft text-accent-strong font-semibold shadow-sm ring-1 ring-accent/40' : 'border-gray-100 text-gray-400 hover:bg-gray-50 hover:border-gray-200'
+                    }`}>
+                    {CHART_ICON_MAP[ct.value](chartType === ct.value)}
+                    {ct.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Section: Data */}
+            <div id="toolbox-section-data" className="px-4 pb-3 scroll-mt-14">
+              <p className="text-[10px] text-gray-400 mb-2 uppercase tracking-wider font-semibold">Select your data</p>
               <div className="flex items-center gap-2 mb-2.5">
                 <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375" /></svg>
                 <select value={tableIds[0] ?? ''} onChange={(e) => { setTableIds([e.target.value]); setLabelColumn(''); setValueColumn(''); }}
-                  className="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-[12px] text-gray-700 font-medium focus:outline-none focus:ring-1 focus:ring-blue-400 truncate">
+                  className="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-[12px] text-gray-700 font-medium focus:outline-none focus:ring-1 focus:ring-accent truncate">
                   {[...tables].sort((a, b) => {
                     const aOrig = a.name.startsWith('original_') ? 0 : 1;
                     const bOrig = b.name.startsWith('original_') ? 0 : 1;
@@ -1767,23 +2046,9 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
               )}
             </div>
 
-            {/* Chart type grid */}
-            <div className="px-4 pb-3">
-              <div className="grid grid-cols-4 gap-1.5">
-                {CHART_TYPES.map((ct) => (
-                  <button key={ct.value} onClick={() => setChartType(ct.value)}
-                    className={`flex flex-col items-center gap-0.5 py-2 rounded-lg border text-[10px] transition-all ${
-                      chartType === ct.value ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold shadow-sm' : 'border-gray-100 text-gray-400 hover:bg-gray-50 hover:border-gray-200'
-                    }`}>
-                    {CHART_ICON_MAP[ct.value](chartType === ct.value)}
-                    {ct.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Mapping */}
-            <Section title="Mapping">
+            {/* Section: Configure (Mapping) */}
+            <div id="toolbox-section-configure" className="scroll-mt-14">
+              <Section title="Configure your chart">
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-[10px] text-gray-400 mb-1 uppercase tracking-wider font-semibold">{isAxisChart ? 'X-Axis' : 'Category'}</label>
@@ -1845,8 +2110,9 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
                 ) : null;
               })()}
             </Section>
+            </div>
 
-            {/* Filters */}
+            {/* Filters (always visible across tabs) */}
             <Section title={`Filters${cleanFilters.length > 0 ? ` (${cleanFilters.length})` : ''}`} defaultOpen={cleanFilters.length > 0}>
               <FilterList columns={columns} filters={filters} onChange={setFilters} />
             </Section>
@@ -1986,15 +2252,49 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       </div>
 
       {/* ── Action Button ── */}
-      <div className="px-4 py-3 border-t border-gray-100 flex-shrink-0">
-        <button onClick={handleSubmit} disabled={!canSubmit}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:text-gray-400 transition-colors shadow-sm">
-          {editing ? (
-            <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg> Update Widget</>
-          ) : (
-            <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg> Add to Dashboard</>
-          )}
-        </button>
+      <div className="px-4 py-3 border-t border-gray-100 flex-shrink-0 space-y-1.5">
+        {editing ? (
+          <>
+            <button onClick={onCancelEdit}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-accent hover:opacity-95 transition-colors shadow-sm">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+              Done
+            </button>
+            <p className="text-center text-[10.5px] text-gray-400 flex items-center justify-center gap-1">
+              <svg className="w-3 h-3 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+              Changes apply automatically
+            </p>
+          </>
+        ) : (
+          <>
+            <button onClick={() => handleSubmit(false)} disabled={!canSubmit}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-accent hover:opacity-95 disabled:bg-gray-200 disabled:text-gray-400 transition-colors shadow-sm">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+              Add to Dashboard
+            </button>
+            <button onClick={() => handleSubmit(true)} disabled={!canSubmit}
+              className="w-full px-3 py-2 rounded-xl text-[11.5px] font-semibold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 disabled:bg-gray-50 disabled:text-gray-300 disabled:border-gray-100 transition-colors">
+              Add and configure another
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* ── Help footer ── */}
+      <div className="px-4 py-2.5 border-t border-gray-100 flex items-center justify-between text-[10.5px] text-gray-400 flex-shrink-0 bg-gray-50/40">
+        <span className="truncate">Need help getting started?</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              const el = document.querySelector('[data-ai-prompt]') as HTMLInputElement | null;
+              setAiMode('chart');
+              el?.focus();
+            }}
+            className="font-semibold text-purple-500 hover:text-purple-700 transition-colors"
+          >
+            Ask AI
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2129,6 +2429,101 @@ function ShareButton({ dashboardId }: { dashboardId: string }) {
 }
 
 // ── Dashboard ──
+
+// ── Empty editor canvas — "Build your chart" hero ──
+
+function BuildYourChartEmpty({ dashboards, activeId, tables, onClone }: {
+  dashboards: DashboardInstance[];
+  activeId: string | null;
+  tables: TableInfo[];
+  onClone: (cfg: ChartWidgetConfig) => void;
+}) {
+  const recentCharts = useMemo(() => {
+    const ordered = [...dashboards].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    const seen = new Set<string>();
+    const out: ChartWidgetConfig[] = [];
+    for (const d of ordered) {
+      if (d.id === activeId) continue;
+      for (const w of d.widgets) {
+        const wt = w.widgetType ?? 'chart';
+        if (wt !== 'chart') continue;
+        const cw = w as ChartWidgetConfig;
+        const sig = `${cw.title}|${cw.chartType}|${cw.labelColumn}|${cw.valueColumn}`;
+        if (seen.has(sig)) continue;
+        seen.add(sig);
+        out.push(cw);
+        if (out.length >= 3) break;
+      }
+      if (out.length >= 3) break;
+    }
+    return out;
+  }, [dashboards, activeId]);
+
+  const focusToolbox = (selector: string) => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector(selector) as HTMLElement | null;
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const focusable = el.matches('input, textarea, select, button')
+        ? el
+        : (el.querySelector('input, textarea, select, button') as HTMLElement | null);
+      focusable?.focus();
+    });
+  };
+
+  return (
+    <div className="h-full overflow-auto">
+      <div className="max-w-3xl mx-auto px-8 py-10">
+        <div className="mb-1 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">New Dashboard</div>
+        <h2 className="text-[20px] font-bold text-gray-900 tracking-tight">Build your chart</h2>
+        <p className="text-[13px] text-gray-500 mt-1">Follow the steps on the right to choose a chart and add it to your dashboard.</p>
+
+        {/* Two-card chooser */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
+          <button
+            onClick={() => focusToolbox('[data-toolbox-chart-types]')}
+            className="group flex flex-col items-start text-left p-5 rounded-2xl border border-gray-200 bg-white tile-shadow hover:border-accent hover:shadow-md transition-all"
+          >
+            <div className="w-10 h-10 rounded-xl bg-accent-soft group-hover:bg-accent-soft-active flex items-center justify-center mb-3 transition-colors">
+              <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+            </div>
+            <span className="text-[13.5px] font-semibold text-gray-800">Add Chart</span>
+            <span className="text-[11.5px] text-gray-500 mt-1">Choose chart type and configure data manually.</span>
+          </button>
+          <button
+            onClick={() => focusToolbox('[data-ai-prompt]')}
+            className="group flex flex-col items-start text-left p-5 rounded-2xl border border-purple-100 bg-gradient-to-br from-purple-50 to-indigo-50 hover:border-purple-300 hover:shadow-md transition-all"
+          >
+            <div className="w-10 h-10 rounded-xl bg-white/80 border border-purple-100 flex items-center justify-center mb-3">
+              <svg className="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+              </svg>
+            </div>
+            <span className="text-[13.5px] font-semibold text-gray-800">Generate with AI</span>
+            <span className="text-[11.5px] text-gray-500 mt-1">Describe the insight you want to visualize.</span>
+          </button>
+        </div>
+
+        {/* "Your dashboard is empty" subhead */}
+        <div className="mt-8 rounded-2xl border border-dashed border-gray-200 bg-white/60 px-6 py-8 text-center">
+          <div className="mx-auto w-12 h-12 rounded-xl bg-gray-100 flex items-center justify-center mb-2">
+            <svg className="w-6 h-6 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+            </svg>
+          </div>
+          <p className="text-[13px] font-semibold text-gray-600">Your dashboard is empty</p>
+          <p className="text-[11.5px] text-gray-400 mt-1">Add a chart or generate one with AI to start visualizing your data.</p>
+        </div>
+
+        <RecentChartsStrip widgets={recentCharts} tables={tables} onClone={onClone} />
+      </div>
+    </div>
+  );
+}
 
 export default function Dashboard({ tables, onImport }: DashboardProps) {
   const [dashboards, setDashboards] = useState<DashboardInstance[]>([]);
@@ -2329,6 +2724,8 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
   }, [activeId]);
 
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [renamingActive, setRenamingActive] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
 
   const handleDelete = (id: string) => {
     setPendingDeleteId(id);
@@ -2366,21 +2763,6 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
   const gridCfg = useMemo(() => ({ cols: 12, rowHeight: 60 }), []);
   const dragCfg = useMemo(() => ({ enabled: true, handle: '.drag-handle' }), []);
   const resizeCfg = useMemo(() => ({ enabled: true }), []);
-
-  const emptyState = (title: string, desc: string, action?: JSX.Element) => (
-    <div className="h-full flex items-center justify-center">
-      <div className="text-center">
-        <div className="mx-auto w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
-          <svg className="w-7 h-7 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-          </svg>
-        </div>
-        <h3 className="text-sm font-semibold text-gray-600 mb-1">{title}</h3>
-        <p className="text-xs text-gray-400 mb-4">{desc}</p>
-        {action}
-      </div>
-    </div>
-  );
 
   // No active dashboard — show Power BI-style home
   if (!activeDashboard) {
@@ -2433,9 +2815,43 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
           Dashboards
         </button>
         <div className="w-px h-5 bg-gray-200" />
-        <h2 className="text-sm font-semibold text-gray-700 truncate">{activeDashboard.name}</h2>
+        {renamingActive ? (
+          <input
+            autoFocus
+            value={renameDraft}
+            onChange={e => setRenameDraft(e.target.value)}
+            onBlur={() => {
+              const next = renameDraft.trim() || activeDashboard.name;
+              if (next !== activeDashboard.name) handleRenameDashboard(activeDashboard.id, next);
+              setRenamingActive(false);
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                const next = renameDraft.trim() || activeDashboard.name;
+                if (next !== activeDashboard.name) handleRenameDashboard(activeDashboard.id, next);
+                setRenamingActive(false);
+              }
+              if (e.key === 'Escape') setRenamingActive(false);
+            }}
+            className="text-sm font-semibold text-gray-700 px-1.5 py-0.5 border border-accent/60 rounded-md focus:outline-none focus:ring-1 focus:ring-accent min-w-0"
+          />
+        ) : (
+          <h2
+            className="text-sm font-semibold text-gray-700 truncate cursor-pointer hover:text-accent-strong transition-colors"
+            onClick={() => { setRenameDraft(activeDashboard.name); setRenamingActive(true); }}
+            title="Click to rename"
+          >
+            {activeDashboard.name}
+          </h2>
+        )}
         <span className="text-[11px] text-gray-400">{widgets.length} widget{widgets.length !== 1 ? 's' : ''}</span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          <span className="hidden sm:inline-flex items-center gap-1 text-[10.5px] text-gray-400" title="Changes save automatically">
+            <svg className="w-3 h-3 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+            Saved
+          </span>
           <ShareButton dashboardId={activeDashboard.id} />
         </div>
       </div>
@@ -2447,7 +2863,12 @@ export default function Dashboard({ tables, onImport }: DashboardProps) {
           if (t === e.currentTarget || t.classList.contains('react-grid-layout') || t.classList.contains('p-4')) setEditing(null);
         }}>
           {widgets.length === 0 ? (
-            emptyState('Your dashboard is empty', 'Configure a chart in the toolbox and click "Add to Dashboard"')
+            <BuildYourChartEmpty
+              dashboards={dashboards}
+              activeId={activeId}
+              tables={tables}
+              onClone={handleAdd}
+            />
           ) : (
             <GridLayout
               className="p-4"

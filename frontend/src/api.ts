@@ -120,6 +120,40 @@ export interface StarSchemaRecommendation {
   aiExplanation: string;
 }
 
+export type CleaningKind =
+  | 'fill_missing'
+  | 'remove_duplicates'
+  | 'standardize_dates'
+  | 'cap_outliers'
+  | 'coerce_types';
+
+export interface CleaningColumnAnalysis {
+  name: string;
+  type: string;
+  nullCount: number;
+  distinctCount: number;
+  samples: string[];
+  issues: { kind: CleaningKind; affected: number }[];
+}
+
+export interface CleaningAnalysis {
+  tableId: string;
+  tableName: string;
+  rowCount: number;
+  duplicateCount: number;
+  qualityScore: number;
+  totalIssues: number;
+  byKind: Record<CleaningKind, number>;
+  columns: CleaningColumnAnalysis[];
+  recommendations: {
+    kind: CleaningKind;
+    title: string;
+    description: string;
+    affected: number;
+  }[];
+  aiSummary?: string;
+}
+
 export interface StarSchemaResult {
   success: boolean;
   factTable: string;
@@ -396,6 +430,36 @@ export const api = {
       return { ...json, data: json.data.result };
     }
     return json as unknown as ApiResponse<StarSchemaResult>;
+  },
+
+  async analyzeCleaning(tableId: string): Promise<ApiResponse<CleaningAnalysis>> {
+    const json = await request<{ analysis: CleaningAnalysis }>(
+      `${API_BASE}/cleaning/analyze`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tableId }),
+      }
+    );
+    if (json.success && json.data?.analysis) {
+      return { ...json, data: json.data.analysis };
+    }
+    return json as unknown as ApiResponse<CleaningAnalysis>;
+  },
+
+  async applyCleaning(
+    tableId: string,
+    kinds: CleaningKind[]
+  ): Promise<ApiResponse<{ applied: { kind: CleaningKind; affected: number }[]; tableName: string }>> {
+    const json = await request<{ applied: { kind: CleaningKind; affected: number }[]; tableName: string }>(
+      `${API_BASE}/cleaning/apply`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tableId, kinds }),
+      }
+    );
+    return json as ApiResponse<{ applied: { kind: CleaningKind; affected: number }[]; tableName: string }>;
   },
 
   // AI chart generation

@@ -2,16 +2,18 @@ import { useState, useRef, useEffect } from 'react';
 import { TableInfo, DatabaseRecord } from '../api';
 import { useAuth } from '../auth';
 import { Conversation } from '../lib/conversations';
+import Logo from './Logo';
 
 interface SidebarProps {
   databases: DatabaseRecord[];
   activeDatabaseId: string | null;
   tables: TableInfo[];
   selectedId: string | null;
-  view: 'dashboard' | 'table' | 'ask-data';
+  view: 'dashboard' | 'table' | 'ask-data' | 'data-cleaning';
   onSelect: (id: string) => void;
   onDashboard: () => void;
   onAskData: () => void;
+  onDataCleaning: () => void;
   onImport: () => void;
   onDelete: (id: string) => void;
   onNormalize: (id: string) => void;
@@ -40,6 +42,7 @@ export default function Sidebar({
   onSelect,
   onDashboard,
   onAskData,
+  onDataCleaning,
   onImport,
   onDelete,
   onNormalize,
@@ -104,16 +107,13 @@ export default function Sidebar({
     <aside className="sidebar">
       {/* Workspace header */}
       <div className="px-3 pt-3 pb-2.5">
-        <div className="w-full flex items-center gap-2 rounded-lg px-2 py-2">
-          <div
-            className="w-8 h-8 rounded-md flex items-center justify-center text-white font-bold text-[13px] shadow-sm"
-            style={{ background: 'linear-gradient(135deg, var(--accent), var(--accent-hover))' }}
-          >
-            P
-          </div>
+        <div className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2">
+          <Logo size={32} />
           <div className="flex-1 text-left min-w-0">
             <div className="text-[10px] text-gray-400 leading-none uppercase tracking-wider font-semibold">Workspace</div>
-            <div className="text-[13px] font-semibold text-gray-900 truncate leading-tight mt-0.5">Plinth</div>
+            <div className="text-[13.5px] font-bold text-gray-900 truncate leading-tight mt-0.5">
+              No<span className="text-accent-strong">Query</span>
+            </div>
           </div>
         </div>
       </div>
@@ -242,6 +242,23 @@ export default function Sidebar({
               )}
             </div>
           )}
+        </div>
+
+        {/* Data Cleaning */}
+        <div className="px-1 mt-0.5">
+          <button
+            onClick={onDataCleaning}
+            className={`flex items-center gap-2 w-full px-2.5 py-[6px] rounded-md text-[13px] transition-colors ${
+              view === 'data-cleaning'
+                ? 'bg-accent-soft text-accent-strong font-medium'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.994 15.994 0 011.622-3.395m3.42 3.42a15.995 15.995 0 004.764-4.648l3.876-5.814a1.151 1.151 0 00-1.597-1.597L14.146 6.32a15.996 15.996 0 00-4.649 4.763m3.42 3.42a6.776 6.776 0 00-3.42-3.42" />
+            </svg>
+            Data Cleaning
+          </button>
         </div>
 
         {/* Databases section */}

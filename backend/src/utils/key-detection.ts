@@ -82,3 +82,112 @@ export function nameMatchesDimension(baseName: string, dimensionName: string): b
     dimSingular.includes(baseName)
   );
 }
+
+// ── Star-schema relationship detection ──
+
+export interface MinimalTable {
+  id: string;
+  name: string;
+  columns: { name: string; type: string }[];
+}
+
+export interface JoinKey { factCol: string; dimCol: string }
+
+/** Detect a FK→PK join key between a fact and dim table. */
+export function detectJoinKey(fact: MinimalTable, dim: MinimalTable): JoinKey | null {
+  const factCols = fact.columns.map(c => c.name);
+  const dimCols = dim.columns.map(c => c.name);
+  const factSet = new Set(factCols);
+  const dimSet = new Set(dimCols);
+
+  // 1. Exact same column name on both sides (existing-PK star schema)
+  const sharedIdCol = factCols.find(c => dimSet.has(c) && isIdColumn(c));
+  if (sharedIdCol) return { factCol: sharedIdCol, dimCol: sharedIdCol };
+
+  // 2. Surrogate key: dim has "id", fact has "<dim.name>_id" or fuzzy match
+  if (dimSet.has('id')) {
+    const exactFk = `${dim.name}_id`;
+    if (factSet.has(exactFk)) return { factCol: exactFk, dimCol: 'id' };
+
+    const dimBase = dim.name.toLowerCase().replace(/^(dim_|lkp_)/, '').replace(/s$/, '');
+    const factFk = factCols.find(c => {
+      if (!isIdColumn(c)) return false;
+      const colBase = extractBaseNameFromId(c).replace(/^(dim_|lkp_)/, '').replace(/s$/, '');
+      return colBase === dimBase || colBase.includes(dimBase) || dimBase.includes(colBase);
+    });
+    if (factFk) return { factCol: factFk, dimCol: 'id' };
+  }
+
+  // 3. Last resort: any shared non-id column
+  const sharedAny = factCols.find(c => dimSet.has(c));
+  if (sharedAny) return { factCol: sharedAny, dimCol: sharedAny };
+
+  return null;
+}
+
+export interface StarSchemaRelationship {
+  factTableId: string;
+  factTableName: string;
+  factCol: string;
+  dimTableId: string;
+  dimTableName: string;
+  dimCol: string;
+  descriptiveColumn?: string;
+}
+
+function isDimTableName(name: string): boolean {
+  return /^(dim_|lkp_)/i.test(name);
+}
+
+function isSnapshotTableName(name: string): boolean {
+  return /^original_/i.test(name);
+}
+
+function pickDescriptiveColumn(dim: MinimalTable, dimCol: string): string | undefined {
+  const isUsable = (c: { name: string; type: string }) =>
+    c.name !== dimCol && c.name !== 'id' && !isIdColumn(c.name);
+  return (
+    dim.columns.find(c => c.type.toUpperCase() === 'VARCHAR' && isUsable(c))
+    ?? dim.columns.find(c => ['DATE', 'TIMESTAMP'].includes(c.type.toUpperCase()) && isUsable(c))
+    ?? dim.columns.find(isUsable)
+  )?.name;
+}
+
+/**
+ * Find FK→PK relationships from non-dim tables (facts) into dim tables,
+ * using name conventions (`dim_*`, `lkp_*` for dims; `original_*` skipped).
+ * For each relationship, also picks the most descriptive column in the dim
+ * (preferring VARCHAR over DATE over anything non-id) so the AI can be told
+ * which column to use as a chart label instead of the bare FK id.
+ */
+export function detectStarSchemaRelationships(tables: MinimalTable[]): StarSchemaRelationship[] {
+  const rels: StarSchemaRelationship[] = [];
+  const seen = new Set<string>();
+
+  const dims = tables.filter(t => isDimTableName(t.name));
+  const facts = tables.filter(t => !isSnapshotTableName(t.name) && !isDimTableName(t.name));
+
+  for (const dim of dims) {
+    for (const fact of facts) {
+      if (fact.id === dim.id) continue;
+      const join = detectJoinKey(fact, dim);
+      if (!join) continue;
+
+      const key = `${fact.id}|${dim.id}|${join.factCol}|${join.dimCol}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      rels.push({
+        factTableId: fact.id,
+        factTableName: fact.name,
+        factCol: join.factCol,
+        dimTableId: dim.id,
+        dimTableName: dim.name,
+        dimCol: join.dimCol,
+        descriptiveColumn: pickDescriptiveColumn(dim, join.dimCol),
+      });
+    }
+  }
+
+  return rels;
+}
