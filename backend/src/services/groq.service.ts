@@ -2,7 +2,30 @@ import Groq from 'groq-sdk';
 import { config } from '../config/index.js';
 import logger from '../utils/logger.js';
 import { ColumnSchema, DimensionRecommendation } from '../types/index.js';
-import { isIdColumn, extractBaseNameFromId, nameMatchesDimension } from '../utils/key-detection.js';
+import {
+  isIdColumn,
+  extractBaseNameFromId,
+  nameMatchesDimension,
+  detectStarSchemaRelationships,
+  StarSchemaRelationship,
+  MinimalTable,
+} from '../utils/key-detection.js';
+
+/**
+ * Build a human-readable "Detected relationships" block telling the AI exactly
+ * which fact→dim joins exist, so it can JOIN the dim table to surface
+ * descriptive names instead of returning raw FK ids.
+ */
+function buildRelationshipsBlock(rels: StarSchemaRelationship[]): string {
+  if (rels.length === 0) return '';
+  const lines = rels.map(r => {
+    const descHint = r.descriptiveColumn
+      ? ` — use "${r.dimTableName}"."${r.descriptiveColumn}" for human-readable labels`
+      : '';
+    return `- "${r.factTableName}"."${r.factCol}"  →  "${r.dimTableName}"."${r.dimCol}"${descHint}`;
+  });
+  return `\nDetected star-schema relationships (fact → dimension joins):\n${lines.join('\n')}\n`;
+}
 
 interface GroqSchemaResponse {
   factTable: {
@@ -401,10 +424,13 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
       return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}${statsBlock}\nRandom sample:\n${rows}`;
     }).join('\n\n---\n\n');
 
+    const relationships = detectStarSchemaRelationships(tables);
+    const relationshipsBlock = buildRelationshipsBlock(relationships);
+
     const aiPrompt = `You are a dashboard chart configuration expert. Given the database tables below and the user's request, generate a chart widget configuration.
 
 ${tablesDescription}
-
+${relationshipsBlock}
 User request: "${sanitizedPrompt}"
 
 Rules:
@@ -512,10 +538,13 @@ Respond ONLY with valid JSON:
       return `Table: "${t.name}" (id: "${t.id}")\nColumns:\n${cols}${statsBlock}\nRandom sample:\n${rows}`;
     }).join('\n\n---\n\n');
 
+    const relationships = detectStarSchemaRelationships(tables);
+    const relationshipsBlock = buildRelationshipsBlock(relationships);
+
     const aiPrompt = `You are a professional BI dashboard designer. Given the database tables below and the user's request, design a complete dashboard with multiple chart widgets that provide comprehensive insights.
 
 ${tablesDescription}
-
+${relationshipsBlock}
 User request: "${sanitizedPrompt}"
 
 Design a dashboard with 4-8 well-chosen widgets. Mix different chart types for visual variety. Include:
@@ -641,6 +670,16 @@ Respond ONLY with a valid JSON array:
       return `Table: "${t.name}"\nColumns:\n${cols}\nSample data (up to 10 rows):\n${rows}`;
     }).join('\n\n---\n\n');
 
+    // Detect FK→PK relationships so the AI knows which joins exist and can
+    // return human-readable names instead of raw FK ids.
+    const minimalTables: MinimalTable[] = tables.map(t => ({
+      id: t.name,
+      name: t.name,
+      columns: t.columns,
+    }));
+    const relationships = detectStarSchemaRelationships(minimalTables);
+    const relationshipsBlock = buildRelationshipsBlock(relationships);
+
     // Build conversation context from history
     let conversationContext = '';
     if (history && history.length > 0) {
@@ -657,7 +696,7 @@ Respond ONLY with a valid JSON array:
 4. Write a brief insight sentence about what the result shows
 
 ${tablesDescription}
-${conversationContext}
+${relationshipsBlock}${conversationContext}
 User question: "${question}"
 
 CLASSIFICATION GUIDE — responseType:
@@ -678,11 +717,16 @@ SQL RULES:
 2. Always quote table names and column names with double quotes.
 3. Use only tables and columns that exist in the schema above.
 4. If the data spans multiple tables, use JOINs. Look at column names and sample data for join keys.
-5. CRITICAL: Select columns that directly answer the question.
-6. If aggregation is needed, use GROUP BY appropriately.
-7. Limit results to 500 rows max unless the user specifies a different limit.
-8. If the user references previous questions, use conversation history for context.
-9. For chart queries: the SQL must produce at least a label column (categories/dates) and a value column (numbers). ORDER BY the value or date column as appropriate.
+5. STAR-SCHEMA AWARENESS — if the "Detected star-schema relationships" block above lists fact→dim joins, you MUST:
+   - JOIN the relevant dim_* / lkp_* tables instead of returning raw FK ids from the fact table.
+   - When the user asks about products / customers / categories / locations / etc., SELECT the descriptive column from the dim table (e.g., "dim_product"."product_name"), NOT the FK id (e.g., "product_id").
+   - GROUP BY the descriptive column from the dim table, not the FK id.
+   - Skip tables named "original_*" — those are pre-normalization snapshots and should not be queried.
+6. CRITICAL: Select columns that directly answer the question. If the user says "products", return product names, not ids.
+7. If aggregation is needed, use GROUP BY appropriately.
+8. Limit results to 500 rows max unless the user specifies a different limit.
+9. If the user references previous questions, use conversation history for context.
+10. For chart queries: the SQL must produce at least a label column (categories/dates) and a value column (numbers). ORDER BY the value or date column as appropriate.
 
 Respond ONLY with valid JSON (no markdown, no code fences):
 {

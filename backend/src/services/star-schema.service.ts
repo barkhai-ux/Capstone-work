@@ -10,6 +10,20 @@ import logger from '../utils/logger.js';
 import { findIdColumn } from '../utils/key-detection.js';
 import { getCurrentDatabaseId } from '../middleware/auth.js';
 
+/**
+ * Find a table name that isn't taken by any existing table in the user's
+ * DuckDB. Tries the requested name first, then appends `_2`, `_3`, ... until
+ * an unused name is found.
+ */
+async function findUnusedTableName(desiredName: string): Promise<string> {
+  if (!(await duckdbService.tableExists(desiredName))) return desiredName;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${desiredName}_${n}`;
+    if (!(await duckdbService.tableExists(candidate))) return candidate;
+  }
+  throw new Error(`Could not find an unused name for "${desiredName}"`);
+}
+
 class StarSchemaService {
   async analyze(tableId: string): Promise<StarSchemaRecommendation> {
     const table = await duckdbService.getTableById(tableId);
@@ -100,11 +114,17 @@ class StarSchemaService {
         continue;
       }
 
-      // Check if dimension table already exists
-      if (await duckdbService.tableExists(dim.dimensionName)) {
-        logger.warn(`Dimension table ${dim.dimensionName} already exists, skipping`);
-        continue;
+      // Resolve a unique name. Table names are unique per-user across the
+      // whole DuckDB file, so a collision can come from a sibling database or
+      // an orphan left by an earlier failed apply. Auto-suffix instead of
+      // silently skipping (which leaves the new database with zero dims).
+      const resolvedDimName = await findUnusedTableName(dim.dimensionName);
+      if (resolvedDimName !== dim.dimensionName) {
+        logger.info(
+          `Dimension name "${dim.dimensionName}" already exists — using "${resolvedDimName}" instead`
+        );
       }
+      dim.dimensionName = resolvedDimName;
 
       const selectCols = validColumns.map((c) => `"${c}"`).join(', ');
       const whereClause = validColumns
