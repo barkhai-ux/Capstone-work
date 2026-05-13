@@ -5,6 +5,9 @@ interface DataCleaningProps {
   table: TableInfo;
   onBack: () => void;
   onToast: (message: string, type?: 'success' | 'error') => void;
+  cachedAnalysis?: CleaningAnalysis | null;
+  onAnalysisChange?: (analysis: CleaningAnalysis | null) => void;
+  onApplied?: () => void | Promise<void>;
 }
 
 const ISSUE_LABELS: Record<CleaningKind, string> = {
@@ -37,15 +40,27 @@ function isMissing(v: unknown): boolean {
   return false;
 }
 
-export default function DataCleaning({ table, onBack, onToast }: DataCleaningProps) {
-  const [analysis, setAnalysis] = useState<CleaningAnalysis | null>(null);
+export default function DataCleaning({
+  table,
+  onBack,
+  onToast,
+  cachedAnalysis = null,
+  onAnalysisChange,
+  onApplied,
+}: DataCleaningProps) {
+  const [analysis, setAnalysis] = useState<CleaningAnalysis | null>(cachedAnalysis);
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
-  const [analyzing, setAnalyzing] = useState(true);
+  const [analyzing, setAnalyzing] = useState(!cachedAnalysis);
   const [applying, setApplying] = useState(false);
   const [activeIssue, setActiveIssue] = useState<CleaningKind | 'all'>('all');
   const [dismissed, setDismissed] = useState<Set<CleaningKind>>(new Set());
 
-  const reload = async () => {
+  const fetchRows = async () => {
+    const rowsRes = await api.getTableData(table.id, 1, 200);
+    if (rowsRes.success && rowsRes.data) setRows(rowsRes.data.rows);
+  };
+
+  const runAnalysis = async () => {
     setAnalyzing(true);
     try {
       const [analyzeRes, rowsRes] = await Promise.all([
@@ -55,6 +70,7 @@ export default function DataCleaning({ table, onBack, onToast }: DataCleaningPro
       if (analyzeRes.success && analyzeRes.data) {
         setAnalysis(analyzeRes.data);
         setDismissed(new Set());
+        onAnalysisChange?.(analyzeRes.data);
       } else {
         onToast(analyzeRes.error || 'Analysis failed', 'error');
       }
@@ -67,7 +83,13 @@ export default function DataCleaning({ table, onBack, onToast }: DataCleaningPro
   };
 
   useEffect(() => {
-    void reload();
+    if (cachedAnalysis) {
+      setAnalysis(cachedAnalysis);
+      setAnalyzing(false);
+      void fetchRows();
+    } else {
+      void runAnalysis();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table.id]);
 
@@ -91,7 +113,8 @@ export default function DataCleaning({ table, onBack, onToast }: DataCleaningPro
           : `Applied ${res.data.applied.length} fixes · ${total} change${total === 1 ? '' : 's'}`;
         onToast(total > 0 ? summary : 'Already clean — no rows changed');
         setDismissed((prev) => new Set([...prev, ...unique]));
-        await reload();
+        await runAnalysis();
+        await onApplied?.();
       } else {
         onToast(res.error || 'Cleaning failed', 'error');
       }
@@ -155,6 +178,17 @@ export default function DataCleaning({ table, onBack, onToast }: DataCleaningPro
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <button
+            disabled={analyzing || applying}
+            onClick={() => void runAnalysis()}
+            title="Re-run analysis on the latest data"
+            className="px-3 py-1.5 text-[12px] font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            <svg className={`w-3.5 h-3.5 ${analyzing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+            {analyzing ? 'Scanning…' : 'Re-scan'}
+          </button>
+          <button
             onClick={() => onToast('Saved as new dataset')}
             className="px-3 py-1.5 text-[12px] font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-lg transition-colors"
           >
@@ -191,7 +225,7 @@ export default function DataCleaning({ table, onBack, onToast }: DataCleaningPro
         <AnalyzingState tableName={table.name} />
       ) : !analysis ? (
         <div className="flex-1 flex items-center justify-center text-sm text-gray-400">
-          Failed to load analysis. <button onClick={reload} className="ml-2 text-accent-strong underline">Retry</button>
+          Failed to load analysis. <button onClick={runAnalysis} className="ml-2 text-accent-strong underline">Retry</button>
         </div>
       ) : (
         <>

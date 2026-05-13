@@ -1707,6 +1707,11 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
   const [tableIds, setTableIds] = useState<string[]>(
     editing?.widgetType === 'chart' ? getTableIds(editing) : editing?.widgetType === 'table' ? [editing.tableId] : (defaultTableId ? [defaultTableId] : [])
   );
+  // Cross-table label join: when the labelColumn lives in a different table than the value column
+  // (typical for AI-generated star-schema charts), labelTableId points to the dim table.
+  const [labelTableId, setLabelTableId] = useState<string | undefined>(
+    editing?.widgetType === 'chart' ? editing.labelTableId : undefined
+  );
   const [labelColumn, setLabelColumn] = useState(editing?.widgetType === 'chart' ? editing.labelColumn : '');
   const [valueColumn, setValueColumn] = useState(editing?.widgetType === 'chart' ? editing.valueColumn : '');
   const [aggregation, setAggregation] = useState<Aggregation>(editing?.widgetType === 'chart' ? editing.aggregation : 'sum');
@@ -1736,6 +1741,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
       setChartTab('configure');
       if (editing.widgetType === 'chart') {
         setChartType(editing.chartType); setTableIds(getTableIds(editing));
+        setLabelTableId(editing.labelTableId);
         setLabelColumn(editing.labelColumn); setValueColumn(editing.valueColumn);
         setAggregation(editing.aggregation);
         setTopN(editing.topN ?? 0);
@@ -1752,12 +1758,17 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
   }, [editing]);
 
   const selectedTables = tables.filter((t) => tableIds.includes(t.id));
+  const labelTable = labelTableId ? tables.find((t) => t.id === labelTableId) ?? null : null;
 
-  // Merge columns from all selected tables, detect type conflicts
+  // Merge columns from all selected tables + the label table (if cross-table join), detect type conflicts
   const { columns, conflicts } = useMemo(() => {
     const colMap = new Map<string, { type: string; tables: string[] }>();
     const conflictList: string[] = [];
-    for (const t of selectedTables) {
+    const tablesForCols = [...selectedTables];
+    if (labelTable && !tablesForCols.find((t) => t.id === labelTable.id)) {
+      tablesForCols.push(labelTable);
+    }
+    for (const t of tablesForCols) {
       for (const c of t.columns) {
         const existing = colMap.get(c.name);
         if (existing) {
@@ -1772,9 +1783,10 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
     }
     const cols = Array.from(colMap.entries()).map(([name, { type }]) => ({ name, type, nullable: true }));
     return { columns: cols, conflicts: conflictList };
-  }, [selectedTables]);
+  }, [selectedTables, labelTable]);
 
   useEffect(() => {
+    // Don't auto-reset columns while editing — would clobber the AI's cross-table picks.
     if (!editing && columns.length > 0 && widgetType === 'chart') {
       const cat = columns.find((c) => c.type.toUpperCase() === 'VARCHAR');
       const num = columns.find((c) => ['INTEGER', 'DECIMAL', 'BIGINT', 'DOUBLE', 'FLOAT'].includes(c.type.toUpperCase()));
@@ -1796,10 +1808,14 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
   const handleSubmit = (keepForm = false) => {
     if (!canSubmit) return;
     if (widgetType === 'chart') {
+      const effectiveLabelTableId =
+        labelTableId && !tableIds.includes(labelTableId) ? labelTableId : undefined;
       const cfg: ChartWidgetConfig = {
         id: editing?.id ?? crypto.randomUUID(),
         widgetType: 'chart',
-        chartType, tableIds, labelColumn, valueColumn, aggregation, topN, dateGrouping,
+        chartType, tableIds,
+        labelTableId: effectiveLabelTableId,
+        labelColumn, valueColumn, aggregation, topN, dateGrouping,
         filters: cleanFilters,
         title: title || `${valueColumn} by ${labelColumn}`,
         style,
@@ -1851,10 +1867,14 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
     if (!canSubmit) return;
     const t = setTimeout(() => {
       if (widgetType === 'chart') {
+        const effectiveLabelTableId =
+          labelTableId && !tableIds.includes(labelTableId) ? labelTableId : undefined;
         onUpdate({
           id: editing.id,
           widgetType: 'chart',
-          chartType, tableIds, labelColumn, valueColumn, aggregation, topN, dateGrouping,
+          chartType, tableIds,
+          labelTableId: effectiveLabelTableId,
+          labelColumn, valueColumn, aggregation, topN, dateGrouping,
           filters: cleanFilters,
           title: title || `${valueColumn} by ${labelColumn}`,
           style,
@@ -1882,7 +1902,7 @@ function Toolbox({ tables, editing, onAdd, onAddMultiple, onUpdate, onCancelEdit
     }, 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, widgetType, chartType, tableIds.join(','), labelColumn, valueColumn, aggregation, topN, dateGrouping, JSON.stringify(cleanFilters), textContent, maxRows, title, JSON.stringify(style), canSubmit]);
+  }, [editing, widgetType, chartType, tableIds.join(','), labelTableId, labelColumn, valueColumn, aggregation, topN, dateGrouping, JSON.stringify(cleanFilters), textContent, maxRows, title, JSON.stringify(style), canSubmit]);
 
   const isAxisChart = chartType === 'bar' || chartType === 'line' || chartType === 'area' || chartType === 'scatter';
 

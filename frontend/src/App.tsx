@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api, TableInfo, DatabaseRecord, setActiveDatabaseId } from './api';
+import { api, TableInfo, DatabaseRecord, setActiveDatabaseId, CleaningAnalysis } from './api';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import TableGrid from './components/TableGrid';
@@ -34,6 +34,7 @@ export default function App() {
   const [unauthView, setUnauthView] = useState<{ kind: 'landing' } | { kind: 'auth'; mode: 'signin' | 'signup' }>({ kind: 'landing' });
   const [modal, setModal] = useState<ModalState>({ type: null });
   const [loading, setLoading] = useState(true);
+  const [cleaningCache, setCleaningCache] = useState<Record<string, CleaningAnalysis>>({});
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
     const c = loadConversations();
@@ -371,6 +372,23 @@ export default function App() {
               table={selectedTable}
               onBack={() => setView('table')}
               onToast={(msg, type) => showToast(msg, type ?? 'success')}
+              cachedAnalysis={cleaningCache[selectedTable.id] ?? null}
+              onAnalysisChange={(a) =>
+                setCleaningCache((prev) => {
+                  if (a === null) {
+                    const { [selectedTable.id]: _drop, ...rest } = prev;
+                    return rest;
+                  }
+                  return { ...prev, [selectedTable.id]: a };
+                })
+              }
+              onApplied={async () => {
+                setCleaningCache((prev) => {
+                  const { [selectedTable.id]: _drop, ...rest } = prev;
+                  return rest;
+                });
+                await handleApplied();
+              }}
             />
           ) : view === 'table' && selectedTable ? (
             <TableGrid
