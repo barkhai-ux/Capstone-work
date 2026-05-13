@@ -20,6 +20,25 @@ const isString = (t: string) => {
   const upper = t.toUpperCase();
   return VARCHAR.some((v) => upper.includes(v));
 };
+const isTimestamp = (t: string) => /TIMESTAMP|DATETIME/.test(t.toUpperCase());
+const isDate = (t: string) => {
+  const u = t.toUpperCase();
+  return u.includes('DATE') && !isTimestamp(t);
+};
+const isBoolean = (t: string) => /BOOL/.test(t.toUpperCase());
+
+// Whether `fill_missing` can produce a sensible default for this column type.
+const isFillable = (t: string) =>
+  isNumeric(t) || isString(t) || isDate(t) || isTimestamp(t) || isBoolean(t);
+
+const fillValueFor = (type: string): string | null => {
+  if (isNumeric(type)) return '0';
+  if (isString(type)) return `'Unknown'`;
+  if (isBoolean(type)) return 'FALSE';
+  if (isTimestamp(type)) return `TIMESTAMP '1970-01-01 00:00:00'`;
+  if (isDate(type)) return `DATE '1970-01-01'`;
+  return null;
+};
 
 export interface ColumnAnalysis {
   name: string;
@@ -121,7 +140,9 @@ export const cleaningService = {
       const nullCount = Number(nullRes[0]?.n ?? 0);
       const distinctCount = Number(nullRes[0]?.d ?? 0);
 
-      if (nullCount > 0) {
+      // Only count fill_missing for columns we can actually fill — otherwise
+      // the user re-applies and the same issue keeps coming back on every scan.
+      if (nullCount > 0 && isFillable(c.type)) {
         issues.push({ kind: 'fill_missing', affected: nullCount });
         byKind.fill_missing += nullCount;
       }
@@ -268,18 +289,18 @@ export const cleaningService = {
 
       if (kind === 'fill_missing') {
         for (const c of cols) {
-          if (!isNumeric(c.type) && !isString(c.type)) continue;
-          const stringFilter = isString(c.type)
+          const value = fillValueFor(c.type);
+          if (value === null) continue;
+          const filter = isString(c.type)
             ? `"${c.name}" IS NULL OR TRIM(CAST("${c.name}" AS VARCHAR)) = ''`
             : `"${c.name}" IS NULL`;
           const before = await duckdbService.all<{ n: number | bigint }>(
-            `SELECT COUNT(*) AS n FROM "${tableName}" WHERE ${stringFilter}`
+            `SELECT COUNT(*) AS n FROM "${tableName}" WHERE ${filter}`
           );
           const cnt = Number(before[0]?.n ?? 0);
           if (cnt > 0) {
-            const value = isNumeric(c.type) ? '0' : `'Unknown'`;
             await duckdbService.run(
-              `UPDATE "${tableName}" SET "${c.name}" = ${value} WHERE ${stringFilter}`
+              `UPDATE "${tableName}" SET "${c.name}" = ${value} WHERE ${filter}`
             );
             affected += cnt;
             details.push(`${c.name}: ${cnt}`);
@@ -336,23 +357,44 @@ export const cleaningService = {
           details.push(`${c.name}: ${cnt}`);
         }
       } else if (kind === 'cap_outliers') {
+        // Cap to the IQR bounds (same definition the analyzer uses), so a
+        // re-scan after applying reports zero outliers instead of re-flagging
+        // the same rows when p99 lies outside the IQR fence.
         for (const c of cols) {
           if (!isNumeric(c.type)) continue;
-          const stats = await duckdbService.all<{ p99: number | null }>(
-            `SELECT QUANTILE_CONT("${c.name}", 0.99) AS p99 FROM "${tableName}" WHERE "${c.name}" IS NOT NULL`
+          const stats = await duckdbService.all<{ q1: number | null; q3: number | null }>(
+            `SELECT QUANTILE_CONT("${c.name}", 0.25) AS q1,
+                    QUANTILE_CONT("${c.name}", 0.75) AS q3
+             FROM "${tableName}" WHERE "${c.name}" IS NOT NULL`
           );
-          const p99 = stats[0]?.p99;
-          if (p99 == null) continue;
-          const before = await duckdbService.all<{ n: number | bigint }>(
-            `SELECT COUNT(*) AS n FROM "${tableName}" WHERE "${c.name}" > ${p99}`
+          const q1 = stats[0]?.q1;
+          const q3 = stats[0]?.q3;
+          if (q1 == null || q3 == null) continue;
+          const iqr = q3 - q1;
+          const upper = q3 + 1.5 * iqr;
+          const lower = q1 - 1.5 * iqr;
+          const before = await duckdbService.all<{ hi: number | bigint; lo: number | bigint }>(
+            `SELECT
+                SUM(CASE WHEN "${c.name}" > ${upper} THEN 1 ELSE 0 END) AS hi,
+                SUM(CASE WHEN "${c.name}" < ${lower} THEN 1 ELSE 0 END) AS lo
+             FROM "${tableName}" WHERE "${c.name}" IS NOT NULL`
           );
-          const cnt = Number(before[0]?.n ?? 0);
-          if (cnt > 0) {
+          const hi = Number(before[0]?.hi ?? 0);
+          const lo = Number(before[0]?.lo ?? 0);
+          if (hi > 0) {
             await duckdbService.run(
-              `UPDATE "${tableName}" SET "${c.name}" = ${p99} WHERE "${c.name}" > ${p99}`
+              `UPDATE "${tableName}" SET "${c.name}" = ${upper} WHERE "${c.name}" > ${upper}`
             );
+          }
+          if (lo > 0) {
+            await duckdbService.run(
+              `UPDATE "${tableName}" SET "${c.name}" = ${lower} WHERE "${c.name}" < ${lower}`
+            );
+          }
+          const cnt = hi + lo;
+          if (cnt > 0) {
             affected += cnt;
-            details.push(`${c.name}: cap ${p99}, ${cnt} rows`);
+            details.push(`${c.name}: clamp [${lower.toFixed(2)}, ${upper.toFixed(2)}], ${cnt} rows`);
           }
         }
       } else if (kind === 'coerce_types') {
