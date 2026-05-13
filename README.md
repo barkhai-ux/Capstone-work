@@ -2,6 +2,24 @@
 
 A web-based platform that lets users upload data files (CSV, Excel, JSON), browse and query them via an embedded DuckDB database, then normalize and restructure their data — all without writing code.
 
+Built for small-business owners (initial target market: Mongolia) who collect data across multiple platforms but lack SQL or data-modeling expertise.
+
+## Live Demo
+
+**https://capstone-work-seven.vercel.app/**
+
+Frontend is hosted on Vercel; the backend runs on Render. Note: the Render free tier sleeps after inactivity, so the first request after idle can take ~30 seconds to respond.
+
+## Screenshots
+
+> Screenshots to be added — see `docs/screenshots/` once available.
+
+<!--
+![Upload flow](docs/screenshots/upload.png)
+![Dashboard with charts](docs/screenshots/dashboard.png)
+![Star schema analyzer](docs/screenshots/star-schema.png)
+-->
+
 ## Features
 
 - **File Upload** — Import CSV, Excel (.xlsx), and JSON files with automatic schema detection
@@ -159,6 +177,34 @@ All routes are mounted under `/api/v1`.
 5. **Star Schema** — AI analyzes your table's sample data and recommends a fact table plus dimension tables. Applying the schema restructures your data accordingly.
 
 6. **Dashboard** — Create charts (Bar, Line, Pie, Doughnut) from any table with configurable axes, aggregations, and color themes. Arrange charts on a draggable grid layout.
+
+## Data Sources
+
+- **[E-commerce Transactions Dataset](https://www.kaggle.com/datasets/smayanj/e-commerce-transactions-dataset/data)** (Kaggle, by Smayan J.) — 50,000 transaction records used as the primary test dataset (columns: Transaction ID, User Name, Age, Country, Product Category, Purchase Amount, Payment Method, Transaction Date).
+- Users provide their own data via the in-app upload flow (CSV, Excel `.xlsx`, JSON). No data is shipped with the platform.
+
+## Known Issues
+
+- **Render free-tier cold starts** — the backend sleeps after inactivity; the first request after idle can take ~30 seconds.
+- **In-memory upload preview** — uploaded files held between the `/upload` and `/upload/commit` steps live in process memory and are lost if the backend restarts before commit.
+- **Destructive normalization / star-schema operations** — applying normalization or star schema drops and recreates the original table. There is no rollback (re-upload to recover).
+- **Excel imports** — only the first sheet of an `.xlsx` workbook is parsed.
+- **JSON flattening** — nested JSON is flattened only one level deep.
+- **No test suite** — neither package has automated tests configured.
+
+## Future Improvements
+
+- Mongolian-language UI translation (primary target user base).
+- Multi-sheet Excel support and deeper JSON flattening.
+- Undo / version history for normalization and star-schema transformations.
+- Persistent upload-preview store (Redis or DB-backed) so previews survive restarts.
+- Automated tests (Vitest for frontend, Jest for backend).
+- PDF export for dashboards.
+
+## Author
+
+**Arkhai B.** — b.arkhai@aum.edu.mn
+American University of Mongolia, Capstone Project (2026).
 
 ## License
 
